@@ -1,25 +1,12 @@
 """
-AireLogix API
-FastAPI service — underwriter workbook generation + deal management endpoints.
-
-Endpoints:
-  GET  /                      — health check
-  POST /workbook              — generate .xlsx from analysis JSON (existing)
-  POST /deals                 — submit new deal from wizard, run credit engine
-  GET  /deals                 — list all deals (lender portal queue)
-  GET  /deals/{deal_id}       — get full deal detail
-  PATCH /deals/{deal_id}/status — advance deal stage
-  POST /deals/{deal_id}/ioi   — lender submits IOI
-  GET  /deals/{deal_id}/ioi   — get IOIs for a deal (borrower dashboard)
+AireLogix API v0.2
+FastAPI -- workbook generation + deal management
 """
 
-import io
-import re
-import tempfile
-import os
+import io, re, tempfile, os, traceback
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Any, Optional
 
@@ -40,15 +27,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-# ── Pydantic models ───────────────────────────────────────────────────────────
-
 class WorkbookRequest(BaseModel):
     analysis: Any
 
-
 class DealSubmission(BaseModel):
-    """Wizard submission payload from borrower app."""
     personal: dict
     aircraft: dict
     financial: dict
@@ -56,13 +38,10 @@ class DealSubmission(BaseModel):
     borrowerType: Optional[str] = "individual"
     transactionType: Optional[str] = "purchase"
 
-
 class StatusUpdate(BaseModel):
     status: str
 
-
 class IOISubmission(BaseModel):
-    """IOI payload from lender portal."""
     institution: str
     officerName: str
     officerEmail: str
@@ -84,8 +63,6 @@ class IOISubmission(BaseModel):
     ackIdentity: Optional[bool] = True
 
 
-# ── Existing endpoints ────────────────────────────────────────────────────────
-
 @app.get("/")
 def health():
     return {"status": "ok", "service": "AireLogix API", "version": "0.2.0"}
@@ -93,7 +70,6 @@ def health():
 
 @app.post("/workbook")
 def generate(req: WorkbookRequest):
-    """Generate underwriter workbook (.xlsx) from analysis JSON."""
     try:
         analysis = req.analysis
         with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
@@ -102,53 +78,35 @@ def generate(req: WorkbookRequest):
         with open(tmp_path, "rb") as f:
             content = f.read()
         os.unlink(tmp_path)
-
         borrower = re.sub(r"[^\x00-\x7F]", "", analysis.get("borrowerName", "Deal"))
         borrower = re.sub(r"[^a-zA-Z0-9]", "_", borrower).strip("_")
         borrower = re.sub(r"_+", "_", borrower) or "Deal"
         date = re.sub(r"[^a-zA-Z0-9-]", "", analysis.get("analysisDate", "draft"))
         filename = f"AireLogix_UW_Workbook_{borrower}_{date}.xlsx"
-
         return StreamingResponse(
             io.BytesIO(content),
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
     except Exception as e:
-        import traceback as tb
-        err = tb.format_exc()
-        print(f"[/deals] ERROR: {err}")
-        raise HTTPException(status_code=500, detail=str(e) + " | " + err[-500:])
+        raise HTTPException(status_code=500, detail=str(e))
 
-
-# ── Deal endpoints ────────────────────────────────────────────────────────────
 
 @app.post("/deals")
 def submit_deal(submission: DealSubmission):
-    """
-    Receive wizard submission, run credit analysis engine, store deal.
-    Returns deal ID and summary for borrower dashboard.
-    """
     try:
-        import traceback as tb
-        print("[/deals] Received submission")
         data = submission.dict()
+        print(f"[/deals] keys={list(data.keys())}")
 
-        # Generate deal ID
         deal_id = generate_deal_id()
         data["applicationId"] = deal_id
+        print(f"[/deals] id={deal_id}")
 
-        # Run credit analysis engine
         analysis = run_analysis(data)
+        print(f"[/deals] rating={analysis['riskRating']['rating']}")
 
-        # Build deal record
         aircraft = data.get("aircraft", {})
-        aircraft_year = aircraft.get("year", "")
-        aircraft_make = aircraft.get("make", "")
-        aircraft_model = aircraft.get("model", "")
-
         personal = data.get("personal", {})
-        loan_prefs = data.get("loanPrefs", {})
 
         deal = {
             "dealId": deal_id,
@@ -157,20 +115,10 @@ def submit_deal(submission: DealSubmission):
             "stage": "under_review",
             "ioiCount": 0,
             "receivedDate": analysis["analysisDate"],
-
-            # Borrower summary (identity withheld from lenders until engagement)
             "borrowerName": analysis["borrowerName"],
             "borrowerEmail": personal.get("email", ""),
-
-            # Aircraft summary (shown to lenders)
-            "aircraft": f"{aircraft_year} {aircraft_make} {aircraft_model}".strip(),
-            "aircraftSub": (
-                f"{aircraft.get('engineProgram', 'No program')} · "
-                f"{aircraft.get('registration', 'N-TBD')} · "
-                f"{aircraft.get('aftt', 0):,} AFTT"
-            ),
-
-            # Key credit metrics (shown to lenders)
+            "aircraft": (str(aircraft.get("year","")) + " " + str(aircraft.get("make","")) + " " + str(aircraft.get("model",""))).strip(),
+            "aircraftSub": str(aircraft.get("engineProgram","No program")) + " / " + str(aircraft.get("registration","N-TBD")) + " / " + str(aircraft.get("aftt","0")) + " AFTT",
             "loanAmount": analysis["transaction"]["loanAmount"],
             "ltv": analysis["transaction"]["ltv"],
             "rating": analysis["riskRating"]["rating"],
@@ -180,15 +128,12 @@ def submit_deal(submission: DealSubmission):
             "nwCoverage": analysis["balanceSheet"]["netWorthCoverage"],
             "flagCount": len(analysis["flags"]),
             "criticalFlags": len([f for f in analysis["flags"] if f.get("severity") == "CRITICAL"]),
-
-            # Full analysis (for lender portal detail view)
             "analysis": analysis,
-
-            # Metadata
             "transactionType": data.get("transactionType", "purchase"),
         }
 
         save_deal(deal)
+        print(f"[/deals] saved {deal_id}")
 
         return {
             "success": True,
@@ -204,15 +149,13 @@ def submit_deal(submission: DealSubmission):
         }
 
     except Exception as e:
+        err = traceback.format_exc()
+        print(f"[/deals] ERROR:\n{err}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/deals")
 def get_deals():
-    """
-    Return all deals for lender portal queue.
-    Returns anonymized summary — borrower identity withheld.
-    """
     try:
         deals = list_deals()
         queue = []
@@ -226,7 +169,7 @@ def get_deals():
                 "aircraftSub": d.get("aircraftSub", ""),
                 "loanAmount": d.get("loanAmount", 0),
                 "ltv": d.get("ltv", 0),
-                "rating": d.get("rating", "—"),
+                "rating": d.get("rating", "-"),
                 "band": d.get("band", ""),
                 "disposition": d.get("disposition", ""),
                 "gdscr": d.get("gdscr", 0),
@@ -234,7 +177,6 @@ def get_deals():
                 "flagCount": d.get("flagCount", 0),
                 "criticalFlags": d.get("criticalFlags", 0),
                 "ioiCount": d.get("ioiCount", 0),
-                # Analysis included for detail view
                 "analysis": d.get("analysis"),
             })
         return {"deals": queue, "count": len(queue)}
@@ -244,26 +186,22 @@ def get_deals():
 
 @app.get("/deals/{deal_id}")
 def get_deal(deal_id: str):
-    """Return full deal detail for lender portal."""
     deal = load_deal(deal_id)
     if not deal:
         raise HTTPException(status_code=404, detail=f"Deal {deal_id} not found")
-    # Return with anonymized ID
     result = dict(deal)
     result["anonId"] = _anon_id(deal_id)
-    # Remove borrower PII from top-level (still in analysis.borrowerName — revealed post-IOI)
     result.pop("borrowerEmail", None)
     return result
 
 
 @app.patch("/deals/{deal_id}/status")
 def patch_status(deal_id: str, update: StatusUpdate):
-    """Advance deal stage — called by borrower app demo switcher."""
-    valid_statuses = [
+    valid = [
         "application_submitted", "under_review", "select_lender_pool",
         "package_distributed", "ioi_received", "lender_selected", "closed"
     ]
-    if update.status not in valid_statuses:
+    if update.status not in valid:
         raise HTTPException(status_code=400, detail=f"Invalid status: {update.status}")
     deal = update_deal_status(deal_id, update.status)
     if not deal:
@@ -273,27 +211,19 @@ def patch_status(deal_id: str, update: StatusUpdate):
 
 @app.post("/deals/{deal_id}/ioi")
 def submit_ioi(deal_id: str, ioi: IOISubmission):
-    """Lender submits IOI for a deal."""
     deal = load_deal(deal_id)
     if not deal:
         raise HTTPException(status_code=404, detail=f"Deal {deal_id} not found")
     try:
         ioi_data = ioi.dict()
         ioi_id = save_ioi(deal_id, ioi_data)
-        return {
-            "success": True,
-            "ioiId": ioi_id,
-            "dealId": deal_id,
-            "refNum": f"IOI-{ioi_id}",
-            "submittedAt": ioi_data.get("submittedAt", ""),
-        }
+        return {"success": True, "ioiId": ioi_id, "dealId": deal_id, "refNum": f"IOI-{ioi_id}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/deals/{deal_id}/ioi")
 def get_iois(deal_id: str):
-    """Return IOIs for a deal — used by borrower dashboard."""
     deal = load_deal(deal_id)
     if not deal:
         raise HTTPException(status_code=404, detail=f"Deal {deal_id} not found")
@@ -301,11 +231,7 @@ def get_iois(deal_id: str):
     return {"dealId": deal_id, "iois": iois, "count": len(iois)}
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
 def _anon_id(deal_id: str) -> str:
-    """Convert full deal ID to anonymized display ID for lender portal."""
-    # AL-2026-ABCD1234 → DEAL-1234
     parts = deal_id.split("-")
     if len(parts) >= 3:
         return f"DEAL-{parts[-1][:4]}"
