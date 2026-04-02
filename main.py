@@ -115,7 +115,10 @@ def generate(req: WorkbookRequest):
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback as tb
+        err = tb.format_exc()
+        print(f"[/deals] ERROR: {err}")
+        raise HTTPException(status_code=500, detail=str(e) + " | " + err[-500:])
 
 
 # ── Deal endpoints ────────────────────────────────────────────────────────────
@@ -127,6 +130,8 @@ def submit_deal(submission: DealSubmission):
     Returns deal ID and summary for borrower dashboard.
     """
     try:
+        import traceback as tb
+        print("[/deals] Received submission")
         data = submission.dict()
 
         # Generate deal ID
