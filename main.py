@@ -34,15 +34,10 @@ app = FastAPI(title="AireLogix API", version="0.2.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://lender.airelogix.com",
-        "https://dev.airelogix.com",
-        "http://localhost:3000",
-        "http://localhost:5173",
-    ],
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization"],
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
