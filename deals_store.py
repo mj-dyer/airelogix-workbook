@@ -211,3 +211,122 @@ def load_iois(deal_id: str) -> list:
         _ensure_dirs()
         p = os.path.join(IOIS_DIR, f"{deal_id}_iois.json")
         return json.load(open(p)) if os.path.exists(p) else []
+
+
+# ── Calloway Demo Seed ────────────────────────────────────────────────────────
+
+CALLOWAY_DEAL_ID = "AL-2026-CALLOWAY"
+
+CALLOWAY_DEMO = {
+    "dealId": CALLOWAY_DEAL_ID,
+    "applicationId": CALLOWAY_DEAL_ID,
+    "status": "ioi_received",
+    "stage": "ioi_received",
+    "ioiCount": 3,
+    "receivedDate": "2026-03-28",
+    "borrowerName": "James R. Calloway",
+    "borrowerEmail": "jcalloway@callowayindustries.com",
+    "aircraft": "2019 Bombardier Challenger 350",
+    "aircraftSub": "Smart Parts Plus \u00b7 N-registered \u00b7 1,100 AFTT",
+    "loanAmount": 9800000,
+    "ltv": 0.70,
+    "rating": 2,
+    "band": "Very Strong",
+    "disposition": "Approve",
+    "gdscr": 2.5294,
+    "nwCoverage": 3.65,
+    "flagCount": 3,
+    "criticalFlags": 0,
+    "transactionType": "purchase",
+    "analysis": {
+        "borrowerName": "James R. Calloway",
+        "analysisDate": "2026-03-28",
+        "riskRating": {"rating": 2, "band": "Very Strong", "disposition": "Approve", "composite": 1.667},
+        "transaction": {
+            "purchasePrice": 14000000,
+            "loanAmount": 9800000,
+            "ltv": 0.70,
+            "downPayment": 4200000,
+            "illustrativeRate": 0.063,
+            "illustrativeMonthlyPayment": 59925,
+            "term": 120,
+        },
+        "gdscr": {
+            "gdscr": 2.5294,
+            "qualifyingIncome": 3935600,
+            "governingYear": 2023,
+            "totalAnnualDebtService": 1555964,
+            "newLoanDebtService": 719106,
+            "existingDebtService": 836858,
+        },
+        "incomeNormalization": {
+            "taxYears": [2023, 2024],
+            "year1Income": 3935600,
+            "year2Income": 4269300,
+            "governingIncome": 3935600,
+            "governingYear": 2023,
+            "k1Detail": [
+                {"entityName": "Calloway Industrial Group, LLC", "participationType": "Member-Manager", "year1Box1": 2850000, "year2Box1": 3120000, "qualifyingIncome": 2850000, "excluded": False},
+                {"entityName": "CIG Holdings II, LLC", "participationType": "Member-Manager", "year1Box1": 480000, "year2Box1": 510000, "qualifyingIncome": 480000, "excluded": False},
+                {"entityName": "CRW Real Estate Partners I, LLC", "participationType": "Managing Member", "year1Box1": 122200, "year2Box1": 132400, "qualifyingIncome": 122200, "excluded": False, "note": "Net after depreciation"},
+                {"entityName": "CRW Real Estate Partners II, LLC", "participationType": "Managing Member", "year1Box1": 76400, "year2Box1": 87900, "qualifyingIncome": 76400, "excluded": False, "note": "Net after depreciation"},
+                {"entityName": "Vantage Point Capital Partners, LLC", "participationType": "Limited Partner", "year1Box1": 185000, "year2Box1": 210000, "qualifyingIncome": 0, "excluded": True, "note": "LP passive — excluded per methodology"},
+            ],
+            "interestIncome": 187400,
+            "dividendIncome": 124600,
+            "otherIncome": 95000,
+        },
+        "balanceSheet": {
+            "totalAssets": 47798842,
+            "liquidAssets": 25698842,
+            "totalLiabilities": 12070000,
+            "netWorth": 35728842,
+            "netWorthCoverage": 3.65,
+            "liquidityRatio": 2.62,
+            "liquidDetail": [
+                {"institution": "First Horizon Bank", "accountType": "Checking + MMA", "balance": 3948382, "netAvailable": 3948382},
+                {"institution": "Fidelity Investments", "accountType": "Individual Brokerage", "balance": 6100000, "netAvailable": 6100000},
+                {"institution": "Morgan Stanley PWM", "accountType": "Margin Account (Pledged)", "balance": 22500460, "marginLoan": 1850000, "pledged": 5000000, "netAvailable": 15650460},
+            ],
+        },
+        "collateral": {
+            "year": 2019,
+            "make": "Bombardier",
+            "model": "Challenger 350",
+            "aftt": 1100,
+            "engineProgram": "Smart Parts Plus",
+            "purchasePrice": 14000000,
+            "estimatedFMV": 17500000,
+            "ltvVsPurchasePrice": 70.0,
+            "ltvVsFMV": 56.0,
+            "curveName": "AireLogix CL350 Curve v4",
+        },
+        "flags": [
+            {"flag": "Income Concentration", "detail": "Calloway Industrial Group represents 81% of qualifying K-1 income", "severity": "WATCH"},
+            {"flag": "LOC Partially Drawn", "detail": "$2.5M drawn on $5.0M private LOC secured by Morgan Stanley account", "severity": "WATCH"},
+            {"flag": "Margin Loan Outstanding", "detail": "$1.85M margin loan against Morgan Stanley brokerage account", "severity": "INFO"},
+        ],
+        "lenderRouting": {
+            "recommended": ["US Bank Aviation Finance", "PNC Equipment Finance", "Citizens Private Bank"],
+            "rationale": "Very Strong credit — ORR 2 qualifies for all eight lender relationships. Preferred distribution to top three given strong GDSCR (2.53x) and net worth coverage (3.65x).",
+        },
+    },
+}
+
+
+def seed_calloway():
+    """Ensure Calloway demo deal exists in the database. Safe to call on every startup."""
+    try:
+        existing = load_deal(CALLOWAY_DEAL_ID)
+        if existing:
+            print(f"[deals_store] Calloway demo already exists")
+            return
+        save_deal(CALLOWAY_DEMO)
+        print(f"[deals_store] Calloway demo seeded: {CALLOWAY_DEAL_ID}")
+    except Exception as e:
+        print(f"[deals_store] Calloway seed error: {e}")
+
+
+# Run seed on import (after schema is ready)
+if _USE_DB:
+    seed_calloway()
