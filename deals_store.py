@@ -301,6 +301,16 @@ CALLOWAY_DEMO = {
             "ltvVsFMV": 56.0,
             "curveName": "AireLogix CL350 Curve v4",
         },
+        "aircraft": {
+            "description": "2019 Bombardier Challenger 350",
+            "serialNumber": "20619",
+            "registration": "N350JC",
+            "aftt": 1100,
+            "engineProgram": "Smart Parts Plus",
+            "year": 2019,
+            "make": "Bombardier",
+            "model": "Challenger 350",
+        },
         "flags": [
             {"flag": "Income Concentration", "detail": "Calloway Industrial Group represents 81% of qualifying K-1 income", "severity": "WATCH"},
             {"flag": "LOC Partially Drawn", "detail": "$2.5M drawn on $5.0M private LOC secured by Morgan Stanley account", "severity": "WATCH"},
