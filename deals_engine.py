@@ -109,6 +109,68 @@ def get_cl350_fmv(year: int, aftt: int, program: str = "") -> Optional[float]:
         base *= 0.90
     return round(base / 1e6, 3)
 
+
+# ── G550 Collateral Curve (v4) ────────────────────────────────────────────────
+BB_G550 = {
+    2003: 12.0, 2004: 13.0, 2005: 14.0, 2006: 14.5, 2007: 15.5,
+    2008: 16.5, 2009: 18.0, 2010: 19.0, 2011: 20.0, 2012: 21.0,
+    2013: 22.0, 2014: 24.0, 2015: 25.0, 2016: 26.0, 2017: 28.0,
+    2018: 29.0, 2019: 31.0, 2020: 33.0,
+}
+CAL_G550 = {
+    2003: -0.107, 2004: -0.104, 2005: -0.080, 2006: -0.042, 2007: -0.075,
+    2008: -0.113, 2009: -0.095, 2010: -0.068, 2011: -0.059, 2012: -0.041,
+    2013: -0.141, 2014: -0.016, 2015: -0.084, 2016: -0.047, 2017: +0.066,
+    2018: +0.057, 2019: +0.044, 2020: +0.040,
+}
+G550_AVG_HRS = 500    # average annual utilization
+G550_CURR_YR = 2026
+G550_ADD = 0.335      # low-time premium: % per 100hrs below average
+G550_D1  = 0.320      # high-time discount tier 1: % per 100hrs, first 500hrs over
+G550_D2  = 0.647      # high-time discount tier 2: % per 100hrs, beyond 500hrs over
+
+
+def get_g550_fmv(year: int, aftt: int, program: str = "") -> Optional[float]:
+    """
+    Returns FMV in millions for Gulfstream G550.
+    Calibrated from 51 closed sales + 13 listing ASPs (v4).
+    """
+    b_retail = BB_G550.get(int(year))
+    if not b_retail:
+        return get_generic_fmv(year, "Gulfstream", "G550", aftt, program)
+
+    bbv = b_retail * 1e6
+    baseline_hrs = (G550_CURR_YR - int(year)) * G550_AVG_HRS
+    delta = baseline_hrs - int(aftt)
+
+    if delta >= 0:
+        # Low time — premium
+        h_adj = bbv * (G550_ADD / 100) * (delta / 100)
+    else:
+        # High time — discount in two tiers
+        above = -delta
+        t1 = min(above, 500)
+        t2 = max(above - 500, 0)
+        h_adj = -(bbv * (G550_D1 / 100) * (t1 / 100) +
+                  bbv * (G550_D2 / 100) * (t2 / 100))
+
+    # Program adjustment
+    p = (program or "").lower()
+    if "enhanced" in p and ("corporatecare" in p or "rolls" in p or "rrcc" in p):
+        prog_adj = 0.030   # RRCC Enhanced: +3% premium
+    elif "corporatecare" in p or "rrcc" in p or "rolls-royce" in p or "rolls royce" in p:
+        prog_adj = 0.0     # RRCC Standard: baseline
+    elif "jssi" in p:
+        prog_adj = -0.030  # JSSI: -3% discount on G550
+    elif "off" in p or "not enrolled" in p or not program:
+        prog_adj = -0.100  # Off program: -10%
+    else:
+        prog_adj = -0.060  # Unrecognized: -6%
+
+    cal = CAL_G550.get(int(year), 0)
+    fmv = (bbv + h_adj) * (1 + prog_adj) * (1 + cal)
+    return round(fmv / 1e6, 3)
+
 def get_generic_fmv(year: int, make: str, model: str, aftt: int, program: str = "") -> Optional[float]:
     """Rough FMV estimate for aircraft types without a dedicated curve."""
     age = 2026 - year
@@ -209,8 +271,8 @@ def get_balloon(fmv: float, loan: float, year: int, aftt: int,
     # Simple depreciation rate by aircraft type
     if "CHALLENGER 350" in model_upper or "CL350" in model_upper:
         depr_rate = 0.030  # 3.0%/yr base
-    elif "G550" in model_upper or "GULFSTREAM" in (make or "").upper():
-        depr_rate = 0.028
+    elif "G550" in model_upper or "G650" in model_upper or "GULFSTREAM" in (make or "").upper():
+        depr_rate = 0.028  # G550/Gulfstream depreciate slower
     elif "XLS" in model_upper:
         depr_rate = 0.035
     else:
@@ -405,6 +467,10 @@ def run_analysis(submission: dict) -> dict:
         fmv_millions = get_xls_fmv(aircraft_year, aircraft_aftt, engine_program)
     elif "CHALLENGER 350" in model_upper or "CL350" in model_upper:
         fmv_millions = get_cl350_fmv(aircraft_year, aircraft_aftt, engine_program)
+    elif "G550" in model_upper or "G-550" in model_upper:
+        fmv_millions = get_g550_fmv(aircraft_year, aircraft_aftt, engine_program)
+    elif "G650" in model_upper or "G700" in model_upper or "G600" in model_upper or "G500" in model_upper:
+        fmv_millions = get_g550_fmv(aircraft_year, aircraft_aftt, engine_program)  # use G550 curve as proxy for other Gulfstreams
     else:
         fmv_millions = get_generic_fmv(aircraft_year, aircraft_make, aircraft_model, aircraft_aftt, engine_program)
 
@@ -757,6 +823,7 @@ def run_analysis(submission: dict) -> dict:
             "ltv_on_purchase_price": round(ltv * 100, 1),
             "curveName": (
                 "AireLogix CL350 Curve v4" if ("CHALLENGER 350" in (aircraft_model or "").upper() or "CL350" in (aircraft_model or "").upper())
+                else "AireLogix G550 Curve v4" if ("G550" in (aircraft_model or "").upper() or "G-550" in (aircraft_model or "").upper())
                 else "AireLogix XLS Curve v4" if "XLS" in (aircraft_model or "").upper()
                 else "AireLogix Generic Curve"
             ),
