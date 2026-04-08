@@ -118,13 +118,17 @@ def submit_deal(submission: DealSubmission):
             "borrowerName": analysis["borrowerName"],
             "borrowerEmail": personal.get("email", ""),
             "aircraft": (str(aircraft.get("year","")) + " " + str(aircraft.get("make","")) + " " + str(aircraft.get("model",""))).strip(),
-            "aircraftSub": str(aircraft.get("engineProgram","No program")) + " / " + str(aircraft.get("registration","N-TBD")) + " / " + str(aircraft.get("aftt","0")) + " AFTT",
+            "aircraftSub": (
+                str(aircraft.get("engineProgram","No program")) + " · " +
+                (str(aircraft.get("registration","")).strip() or "N-reg") + " · " +
+                "{:,}".format(int(str(aircraft.get("aftt","0")).replace(",","") or 0)) + " AFTT"
+            ),
             "loanAmount": analysis["transaction"]["loanAmount"],
             "ltv": analysis["transaction"]["ltv"],
-            "rating": analysis["riskRating"]["rating"],
-            "band": analysis["riskRating"]["band"],
-            "disposition": analysis["riskRating"]["disposition"],
-            "gdscr": analysis["gdscr"]["gdscr"],
+            "rating": analysis.get("riskRating", {}).get("rating", 0),
+            "band": analysis.get("riskRating", {}).get("band", ""),
+            "disposition": analysis.get("riskRating", {}).get("disposition", ""),
+            "gdscr": analysis.get("gdscr", {}).get("gdscr", 0),
             "nwCoverage": analysis["balanceSheet"]["netWorthCoverage"],
             "flagCount": len(analysis["flags"]),
             "criticalFlags": len([f for f in analysis["flags"] if f.get("severity") == "CRITICAL"]),
@@ -140,9 +144,9 @@ def submit_deal(submission: DealSubmission):
             "dealId": deal_id,
             "applicationId": deal_id,
             "status": "select_lender_pool",
-            "rating": analysis["riskRating"]["rating"],
-            "band": analysis["riskRating"]["band"],
-            "gdscr": analysis["gdscr"]["gdscr"],
+            "rating": analysis.get("riskRating", {}).get("rating", 0),
+            "band": analysis.get("riskRating", {}).get("band", ""),
+            "gdscr": analysis.get("gdscr", {}).get("gdscr", 0),
             "loanAmount": analysis["transaction"]["loanAmount"],
             "aircraft": deal["aircraft"],
             "receivedDate": analysis["analysisDate"],
@@ -199,7 +203,7 @@ def get_deal(deal_id: str):
 def patch_status(deal_id: str, update: StatusUpdate):
     valid = [
         "application_submitted", "under_review", "select_lender_pool",
-        "package_distributed", "ioi_received", "lender_selected", "closed"
+        "package_distributed", "ioi_received", "lender_selected", "closed", "passed"
     ]
     if update.status not in valid:
         raise HTTPException(status_code=400, detail=f"Invalid status: {update.status}")
