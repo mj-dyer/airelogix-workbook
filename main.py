@@ -4,6 +4,7 @@ FastAPI -- workbook generation + deal management
 """
 
 import io, re, tempfile, os, traceback
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -317,12 +318,12 @@ Rules:
 
 
 @app.post("/extract")
-def extract_documents(req: ExtractionRequest):
+async def extract_documents(req: ExtractionRequest):
     if not ANTHROPIC_API_KEY:
         raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not configured")
 
     try:
-        import httpx, json as _json
+        import json as _json
 
         docs = req.documents
         if not docs:
@@ -379,16 +380,17 @@ def extract_documents(req: ExtractionRequest):
 
         print(f"[/extract] Calling Claude API with {len(content_blocks)-1} document(s)")
 
-        response = httpx.post(
-            ANTHROPIC_URL,
-            headers={
-                "x-api-key": ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json"
-            },
-            json=payload,
-            timeout=120.0
-        )
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                ANTHROPIC_URL,
+                headers={
+                    "x-api-key": ANTHROPIC_API_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json"
+                },
+                json=payload,
+                timeout=120.0
+            )
 
         if response.status_code != 200:
             print(f"[/extract] Claude API error {response.status_code}: {response.text[:300]}")
@@ -427,9 +429,9 @@ def extract_documents(req: ExtractionRequest):
 
 
 @app.post("/extract/debug")
-def extract_debug(req: ExtractionRequest):
+async def extract_debug(req: ExtractionRequest):
     """Returns raw Claude response for debugging — do not expose in production."""
-    result = extract_documents(req)
+    result = await extract_documents(req)
     return result
 
 
