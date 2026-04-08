@@ -449,18 +449,32 @@ def run_analysis(submission: dict) -> dict:
     total_pro_forma_ds = annual_aircraft_ds + existing_annual_ds
 
     # ── Income normalization ───────────────────────────────────────────────────
-    # Parse financial snapshot from wizard
-    total_assets = float(str(financial.get("totalAssets", "0")).replace(",", "") or 0)
-    liquid_assets = float(str(financial.get("liquidAssets", "0")).replace(",", "") or 0)
-    contingent_liabilities = float(str(financial.get("contingentLiabilities", "0")).replace(",", "") or 0)
-    recurring_cash = float(str(financial.get("recurringCash", "0")).replace(",", "") or 0)
+    def _parse_num(val):
+        try:
+            return float(str(val).replace(",", "").replace("$", "") or 0)
+        except (ValueError, TypeError):
+            return 0.0
 
-    # Determine liabilities
+    total_assets = _parse_num(financial.get("totalAssets", "0"))
+    liquid_assets = _parse_num(financial.get("liquidAssets", "0"))
+    contingent_liabilities = _parse_num(financial.get("contingentLiabilities", "0"))
+    recurring_cash = _parse_num(financial.get("recurringCash", "0"))
+    net_worth_submitted = _parse_num(financial.get("netWorth", "0"))
+
+    # Liabilities: use submitted or derive from assets
     total_liabilities = contingent_liabilities
-    stated_net_worth = max(0, total_assets - total_liabilities)
+    if net_worth_submitted > 0 and total_assets > 0:
+        # Use submitted net worth directly
+        stated_net_worth = net_worth_submitted
+        total_liabilities = max(0, total_assets - stated_net_worth)
+    elif total_assets > 0:
+        stated_net_worth = max(0, total_assets - total_liabilities)
+    else:
+        # Fall back: use liquid assets as proxy for total assets
+        total_assets = liquid_assets
+        stated_net_worth = max(0, liquid_assets - total_liabilities)
 
     # Income normalization — use recurring cash as qualifying income
-    # For wizard submissions we have one year of data so no variance calculation
     qualifying_income = recurring_cash
     # Estimate taxes at effective 36% for UHNW individuals
     eff_tax_rate = 0.36
