@@ -13,7 +13,7 @@ from typing import Optional
 
 # ── Rate methodology ──────────────────────────────────────────────────────────
 SOFR_OIS_SPREAD_BPS = 200  # 200bps flat spread over SOFR OIS for GDSCR illustration
-SOFR_OIS_FALLBACK = 0.0377  # fallback if live rate unavailable
+SOFR_OIS_FALLBACK = 0.0430  # SOFR OIS ~4.30% as of Q1 2026; update periodically
 
 
 # ── Collateral engine (XLS+ curve v3) ────────────────────────────────────────
@@ -65,6 +65,49 @@ def get_xls_fmv(year: int, aftt: int, program: str = "") -> Optional[float]:
     fmv = base * (1 - disc) * (1 + cal)
     return round(fmv / 1e6, 3)
 
+
+
+# ── CL350 Collateral Curve (v4) ───────────────────────────────────────────────
+BB_CL350 = {
+    2014: {"retail": 15.5, "age": 12}, 2015: {"retail": 16.0, "age": 11},
+    2016: {"retail": 16.5, "age": 10}, 2017: {"retail": 17.0, "age": 9},
+    2018: {"retail": 17.5, "age": 8},  2019: {"retail": 18.0, "age": 7},
+    2020: {"retail": 18.5, "age": 6},  2021: {"retail": 19.0, "age": 5},
+    2022: {"retail": 19.5, "age": 4},
+}
+MARKET_CAL_CL350 = {
+    2014: -0.080, 2015: -0.050, 2016: -0.025, 2017: -0.020,
+    2018: -0.045, 2019: +0.075, 2020: +0.055, 2021: +0.040, 2022: +0.020,
+}
+HRS_YR_CL350 = 475
+A_SC_CL350 = 38.999
+B0_CL350 = 0.016636
+KK_CL350 = 0.44882
+
+
+def get_cl350_fmv(year: int, aftt: int, program: str = "") -> Optional[float]:
+    """Returns FMV in millions for Bombardier Challenger 350."""
+    b = BB_CL350.get(int(year))
+    if not b:
+        # Out of range — use generic
+        return get_generic_fmv(year, "Bombardier", "Challenger 350", aftt, program)
+    avg = b["age"] * HRS_YR_CL350
+    delta = avg - aftt
+    A = A_SC_CL350 * b["retail"]
+    B = B0_CL350 * math.exp(KK_CL350 * (10 - b["age"]))
+    h_adj = delta * A + abs(delta) * delta * B
+    base = b["retail"] * 1e6 + h_adj
+    cal = MARKET_CAL_CL350.get(int(year), 0)
+    base = base * (1 + cal)
+    # Program premium
+    p = (program or "").lower()
+    if "jssi" in p or "esp" in p or "essential select" in p:
+        base *= 1.035
+    elif "msp" in p or "smart parts" in p:
+        base *= 1.025
+    elif "off" in p or "not enrolled" in p or not program:
+        base *= 0.90
+    return round(base / 1e6, 3)
 
 def get_generic_fmv(year: int, make: str, model: str, aftt: int, program: str = "") -> Optional[float]:
     """Rough FMV estimate for aircraft types without a dedicated curve."""
@@ -139,11 +182,43 @@ def get_generic_fmv(year: int, make: str, model: str, aftt: int, program: str = 
 
 # ── Payment math ──────────────────────────────────────────────────────────────
 
-def monthly_payment(principal: float, annual_rate: float, term_months: int) -> float:
+def monthly_payment(principal: float, annual_rate: float, term_months: int,
+                    balloon: float = 0.0) -> float:
+    """
+    Balloon-aware payment. balloon is the future value (lump sum at maturity).
+    If balloon=0, standard full amortization.
+    Formula: PMT = (PV * g - FV) * r / (g - 1) where g = (1+r)^n
+    """
     if annual_rate == 0 or term_months == 0:
-        return principal / term_months if term_months else 0
+        return (principal - balloon) / term_months if term_months else 0
     r = annual_rate / 12
-    return principal * r * (1 + r) ** term_months / ((1 + r) ** term_months - 1)
+    g = (1 + r) ** term_months
+    return (principal * g - balloon) * r / (g - 1)
+
+
+def get_balloon(fmv: float, loan: float, year: int, aftt: int,
+                term_months: int, make: str, model: str, program: str) -> float:
+    """
+    Calculate balloon payment = 70% of projected FMV at maturity.
+    Uses simple annual depreciation from current FMV, capped at 90% of loan.
+    fmv is in dollars (e.g. 18252000).
+    """
+    term_years = round(term_months / 12)
+    model_upper = (model or "").upper()
+
+    # Simple depreciation rate by aircraft type
+    if "CHALLENGER 350" in model_upper or "CL350" in model_upper:
+        depr_rate = 0.030  # 3.0%/yr base
+    elif "G550" in model_upper or "GULFSTREAM" in (make or "").upper():
+        depr_rate = 0.028
+    elif "XLS" in model_upper:
+        depr_rate = 0.035
+    else:
+        depr_rate = 0.035
+
+    fmv_at_maturity = fmv * ((1 - depr_rate) ** term_years)
+    balloon = fmv_at_maturity * 0.70
+    return min(balloon, loan * 0.90)
 
 
 # ── GDSCR scoring (Factor 1) ──────────────────────────────────────────────────
@@ -328,6 +403,8 @@ def run_analysis(submission: dict) -> dict:
     make_upper = (aircraft_make or "").upper()
     if "XLS" in model_upper and ("CITATION" in model_upper or "CESSNA" in make_upper):
         fmv_millions = get_xls_fmv(aircraft_year, aircraft_aftt, engine_program)
+    elif "CHALLENGER 350" in model_upper or "CL350" in model_upper:
+        fmv_millions = get_cl350_fmv(aircraft_year, aircraft_aftt, engine_program)
     else:
         fmv_millions = get_generic_fmv(aircraft_year, aircraft_make, aircraft_model, aircraft_aftt, engine_program)
 
@@ -343,11 +420,16 @@ def run_analysis(submission: dict) -> dict:
     ltv_vs_fmv = loan_amount / fmv if fmv else ltv
 
     # Term
-    term_str = loan_prefs.get("preferredTerm", "60")
+    term_str = str(loan_prefs.get("preferredTerm", "120"))
     try:
-        term_months = int(str(term_str).replace(" months", "").replace(" Months", "") or 60)
+        # Strip any text, extract digits only
+        import re as _re
+        term_digits = _re.sub(r"[^0-9]", "", term_str)
+        term_months = int(term_digits) if term_digits else 120
+        if term_months < 12 or term_months > 300:
+            term_months = 120  # sanity clamp
     except (ValueError, TypeError):
-        term_months = 60
+        term_months = 120
 
     # Illustrative rate: SOFR OIS + 200bps
     illustrative_rate = SOFR_OIS_FALLBACK + SOFR_OIS_SPREAD_BPS / 10000
@@ -357,7 +439,9 @@ def run_analysis(submission: dict) -> dict:
         f"30/360 basis. Not a lender commitment."
     )
 
-    monthly_pmt = monthly_payment(loan_amount, illustrative_rate, term_months)
+    balloon_pmt = get_balloon(fmv, loan_amount, aircraft_year, aircraft_aftt,
+                              term_months, aircraft_make, aircraft_model, engine_program)
+    monthly_pmt = monthly_payment(loan_amount, illustrative_rate, term_months, balloon_pmt)
     annual_aircraft_ds = monthly_pmt * 12
 
     # Existing debt service
@@ -390,7 +474,7 @@ def run_analysis(submission: dict) -> dict:
     income_declining = False
 
     # ── GDSCR ─────────────────────────────────────────────────────────────────
-    gdscr = after_tax_qualifying / total_pro_forma_ds if total_pro_forma_ds > 0 else 0
+    gdscr = qualifying_income / total_pro_forma_ds if total_pro_forma_ds > 0 else 0
     gdscr_assessment = (
         "Strong" if gdscr >= 2.0 else
         "Adequate" if gdscr >= 1.5 else
@@ -642,6 +726,26 @@ def run_analysis(submission: dict) -> dict:
             "year": aircraft_year,
             "make": aircraft_make,
             "model": aircraft_model,
+        },
+        "collateral": {
+            "year": aircraft_year,
+            "make": aircraft_make,
+            "model": aircraft_model,
+            "sn": aircraft_serial or "TBD",
+            "registration": aircraft_data.get("registration", ""),
+            "aftt": aircraft_aftt,
+            "engine_program": engine_program or "",
+            "fmv_curve": round(fmv),
+            "fmv_purchase_price": round(purchase_price),
+            "fmv_used": round(fmv),
+            "estimatedFMV": round(fmv),
+            "ltv_on_curve_fmv": round(ltv_vs_fmv * 100, 1),
+            "ltv_on_purchase_price": round(ltv * 100, 1),
+            "curveName": (
+                "AireLogix CL350 Curve v4" if ("CHALLENGER 350" in (aircraft_model or "").upper() or "CL350" in (aircraft_model or "").upper())
+                else "AireLogix XLS Curve v4" if "XLS" in (aircraft_model or "").upper()
+                else "AireLogix Generic Curve"
+            ),
         },
         "transaction": {
             "purchasePrice": purchase_price,
