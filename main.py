@@ -482,3 +482,67 @@ def _build_summary(extracted: dict) -> dict:
         "documentSourced": True,
         "dataConfidence": extracted.get("dataConfidence", "high")
     }
+
+
+@app.post("/parse-spec")
+async def parse_spec(req: dict):
+    """Parse aircraft spec sheet PDF and return structured fields."""
+    if not ANTHROPIC_API_KEY:
+        raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not configured")
+
+    base64_data = req.get("base64", "")
+    if not base64_data:
+        raise HTTPException(status_code=400, detail="No base64 data provided")
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                ANTHROPIC_URL,
+                headers={
+                    "x-api-key": ANTHROPIC_API_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json"
+                },
+                json={
+                    "model": "claude-sonnet-4-20250514",
+                    "max_tokens": 500,
+                    "messages": [{
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "document",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "application/pdf",
+                                    "data": base64_data
+                                }
+                            },
+                            {
+                                "type": "text",
+                                "text": "Extract aircraft specification data. Return ONLY valid JSON with these fields: year (integer), make (string), model (string), serialNumber (string), registration (string tail number e.g. N599JF), totalAirframeHours (integer), engineProgram (string). Use null for any field not found. No markdown, no explanation, just JSON."
+                            }
+                        ]
+                    }]
+                },
+                timeout=60.0
+            )
+
+        if response.status_code != 200:
+            raise HTTPException(status_code=502, detail=f"Claude API error {response.status_code}")
+
+        raw = response.json()
+        text = ""
+        for block in raw.get("content", []):
+            if block.get("type") == "text":
+                text += block.get("text", "")
+
+        import json as _json, re as _re
+        text = _re.sub(r"```[a-z]*", "", text).replace("```", "").strip()
+        parsed = _json.loads(text)
+        print(f"[/parse-spec] Parsed: {parsed}")
+        return {"success": True, "data": parsed}
+
+    except Exception as e:
+        err = traceback.format_exc()
+        print(f"[/parse-spec] ERROR: {err}")
+        raise HTTPException(status_code=500, detail=str(e))
