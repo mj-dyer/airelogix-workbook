@@ -519,7 +519,24 @@ async def parse_spec(req: dict):
                             },
                             {
                                 "type": "text",
-                                "text": "Extract aircraft specification data. Return ONLY valid JSON with these fields: year (integer), make (string), model (string), serialNumber (string), registration (string tail number e.g. N599JF), totalAirframeHours (integer), engineProgram (string). Use null for any field not found. No markdown, no explanation, just JSON."
+                                "text": (
+                                "Extract aircraft specification data from this spec sheet. "
+                                "Return ONLY valid JSON with exactly these fields:\n"
+                                "{\n"
+                                "  \"year\": 2019,\n"
+                                "  \"make\": \"Bombardier\",\n"
+                                "  \"model\": \"Challenger 350\",\n"
+                                "  \"serialNumber\": \"20632\",\n"
+                                "  \"registration\": \"N599JF\",\n"
+                                "  \"totalAirframeHours\": 2424,\n"
+                                "  \"engineProgram\": \"JSSI Essential Select Plus\"\n"
+                                "}\n"
+                                "For engineProgram: look for engine maintenance program enrollment. "
+                                "Common programs: JSSI, JSSI Essential Select Plus, Honeywell MSP Gold, "
+                                "Honeywell MSP, Rolls-Royce CorporateCare, Rolls-Royce CorporateCare Enhanced, "
+                                "Smart Parts Plus. Return exact program name as listed, or null if not found. "
+                                "Use null for any field not found. No markdown, no explanation, just JSON."
+                            )
                             }
                         ]
                     }]
