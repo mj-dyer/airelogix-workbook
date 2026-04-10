@@ -1,1253 +1,878 @@
 """
-AireLogix Underwriter Workbook Generator
-Produces a 7-tab branded .xlsx from run_spreading_analysis() JSON output.
-
-Usage:
-    python generate_workbook.py <analysis_json_path> <output_path>
-    python generate_workbook.py hargrove_analysis.json hargrove_workbook.xlsx
-
-Or import directly:
-    from generate_workbook import generate_workbook
-    generate_workbook(analysis_dict, "./output/workbook.xlsx")
-
-Tabs:
-    1. Cover          — deal summary, rating, disposition
-    2. Income         — normalization, variance, qualifying income build
-    3. Balance Sheet  — tiered assets, entity guarantee, coverage metrics
-    4. GDSCR          — pro forma debt service build, coverage calculation
-    5. Scorecard      — six-factor scoring with weighted composite
-    6. Lenders        — eligible/eliminated routing table
-    7. Flags          — risk flags with mitigants and required actions
+AireLogix Underwriting Workbook Generator — v2.0
+9-tab structure per v1.7 methodology
 """
 
-import json
-import sys
 from openpyxl import Workbook
 from openpyxl.styles import (
     Font, PatternFill, Alignment, Border, Side, numbers
 )
 from openpyxl.utils import get_column_letter
+import math
+from datetime import datetime
 
-# ── Brand colors (openpyxl uses ARGB hex, no #) ──────────────────────────────
-NAVY_DEEP   = "FF060F1E"
-NAVY_BASE   = "FF071428"
-NAVY_MID    = "FF0B1E3A"
-NAVY_CARD   = "FF0E2244"
-NAVY_BORDER = "FF1A3460"
-GOLD        = "FFC8A96E"
-GOLD_LIGHT  = "FFE8CC9A"
-GOLD_DARK   = "FFA06810"
-CREAM       = "FFF5F3EE"
-STEEL       = "FF8BA4BE"
-WHITE       = "FFFFFFFF"
-GREEN       = "FF2D9E5F"
-AMBER       = "FFD4800A"
-RED         = "FFC0392B"
-BLACK       = "FF000000"
-BLUE_INPUT  = "FF0000FF"   # industry standard — hardcoded inputs
-BLACK_CALC  = "FF000000"   # industry standard — formulas
-GREEN_LINK  = "FF008000"   # industry standard — cross-sheet links
 
-# ── Fonts ─────────────────────────────────────────────────────────────────────
-FONT_BODY    = "Arial"
-FONT_MONO    = "Courier New"
+# ── Brand colors (openpyxl uses ARGB hex) ────────────────────────────────────
+NAVY      = "FF020C1A"
+NAVY2     = "FF04101F"
+NAVY3     = "FF0B1E3A"
+GOLD      = "FFE8CC9A"
+GOLD2     = "FFC8A96E"
+GOLD3     = "FF9A7A14"
+WHITE     = "FFFFFFFF"
+STEEL     = "FF8BA4BE"
+GREEN     = "FF2D9E5F"
+RED       = "FFC0392B"
+AMBER     = "FFE67E22"
+LIGHT_BG  = "FFF5F0E8"
+MID_BG    = "FFE8E0D0"
 
-# ── Number formats ────────────────────────────────────────────────────────────
-FMT_CURRENCY  = '$#,##0;($#,##0);"-"'
-FMT_CURRENCY2 = '$#,##0.00;($#,##0.00);"-"'
-FMT_PCT       = '0.00%;(0.00%);"-"'
-FMT_PCT1      = '0.0%;(0.0%);"-"'
-FMT_MULTIPLE  = '0.00x'
-FMT_NUMBER    = '#,##0;(#,##0);"-"'
-FMT_TEXT      = '@'
+# Input (blue), formula (black), cross-sheet (green) per standard
+BLUE_INPUT = "FF0000FF"
+BLACK_CALC = "FF000000"
+GREEN_LINK = "FF008000"
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _fill(hex_color):
-    return PatternFill("solid", fgColor=hex_color)
+    return PatternFill("solid", start_color=hex_color, fgColor=hex_color)
 
-def _font(bold=False, color=BLACK, size=10, italic=False, name=FONT_BODY):
-    return Font(name=name, bold=bold, color=color, size=size, italic=italic)
+def _font(bold=False, color=BLACK_CALC, size=10, italic=False):
+    return Font(name="Arial", bold=bold, color=color, size=size, italic=italic)
+
+def _border(style="thin"):
+    s = Side(style=style, color="FFD0C8B8")
+    return Border(left=s, right=s, top=s, bottom=s)
+
+def _bottom_border():
+    s = Side(style="thin", color="FFD0C8B8")
+    return Border(bottom=s)
 
 def _align(h="left", v="center", wrap=False):
     return Alignment(horizontal=h, vertical=v, wrap_text=wrap)
 
-def _border(color=NAVY_BORDER):
-    s = Side(style="thin", color=color)
-    return Border(left=s, right=s, top=s, bottom=s)
+def _fmt_dollar(ws, cell_ref, decimals=0):
+    ws[cell_ref].number_format = f'$#,##0{"." + "0"*decimals if decimals else ""};($#,##0{"." + "0"*decimals if decimals else ""});"-"'
 
-def _bottom_border(color=GOLD_DARK):
-    return Border(bottom=Side(style="medium", color=color))
+def _fmt_pct(ws, cell_ref, decimals=1):
+    ws[cell_ref].number_format = f'0.{"0"*decimals}%;-0.{"0"*decimals}%;"-"'
 
-def safe(v, fallback="—"):
-    if v is None or v == "":
-        return fallback
-    return v
+def _fmt_x(ws, cell_ref, decimals=2):
+    ws[cell_ref].number_format = f'0.{"0"*decimals}x;-0.{"0"*decimals}x;"-"'
 
-def fmt_currency(v):
-    if v is None: return "—"
-    return v  # let Excel format it
-
-def fmt_pct(v):
-    if v is None: return "—"
-    return v  # let Excel format it
-
-def set_col_width(ws, col, width):
-    ws.column_dimensions[get_column_letter(col)].width = width
-
-def apply_header_row(ws, row, values, widths=None, bg=NAVY_BASE, fg=GOLD_LIGHT):
-    """Write a styled header row."""
-    for ci, val in enumerate(values, 1):
-        c = ws.cell(row=row, column=ci, value=val)
-        c.font = _font(bold=True, color=fg, size=10)
-        c.fill = _fill(bg)
-        c.alignment = _align("center")
-        c.border = _border()
-
-def apply_section_title(ws, row, col, text, colspan=1, bg=NAVY_MID, fg=GOLD):
-    """Section heading spanning multiple columns."""
-    c = ws.cell(row=row, column=col, value=text)
-    c.font = _font(bold=True, color=fg, size=11)
-    c.fill = _fill(bg)
+def _header_row(ws, row, title, col_span=8):
+    ws.row_dimensions[row].height = 22
+    c = ws.cell(row=row, column=1, value=title)
+    c.font = _font(bold=True, color=GOLD, size=10)
+    c.fill = _fill(NAVY3)
     c.alignment = _align("left")
-    c.border = _bottom_border()
-    if colspan > 1:
-        ws.merge_cells(
-            start_row=row, start_column=col,
-            end_row=row, end_column=col + colspan - 1
-        )
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=col_span)
 
-def apply_kv_row(ws, row, label, value, fmt=None, shade=False, value_color=BLACK_CALC, label_col=1, value_col=2):
-    bg = "FFE8EFF5" if shade else "FFFAFBFC"
-    lc = ws.cell(row=row, column=label_col, value=label)
-    lc.font = _font(bold=True, color="FF374151", size=10)
-    lc.fill = _fill(bg)
-    lc.alignment = _align("left")
-    lc.border = _border("FFD1D5DB")
+def _label(ws, row, col, text, bold=False, indent=0):
+    prefix = "  " * indent
+    c = ws.cell(row=row, column=col, value=prefix + text)
+    c.font = _font(bold=bold, color="FF2C3E50", size=9)
+    c.alignment = _align("left")
+    c.fill = _fill(LIGHT_BG)
+    return c
 
-    vc = ws.cell(row=row, column=value_col, value=value)
-    vc.font = _font(color=value_color, size=10, name=FONT_MONO)
-    vc.fill = _fill(bg)
-    vc.alignment = _align("right")
-    vc.border = _border("FFD1D5DB")
-    if fmt:
-        vc.number_format = fmt
-    return lc, vc
+def _value(ws, row, col, val, fmt="dollar", bold=False, color=None):
+    c = ws.cell(row=row, column=col, value=val)
+    c.font = _font(bold=bold, color=color or BLACK_CALC, size=9)
+    c.alignment = _align("right")
+    c.fill = _fill("FFFBF8F2")
+    if fmt == "dollar":
+        c.number_format = '$#,##0;($#,##0);"-"'
+    elif fmt == "pct":
+        c.number_format = '0.0%;-0.0%;"-"'
+    elif fmt == "x":
+        c.number_format = '0.00x;-0.00x;"-"'
+    elif fmt == "bps":
+        c.number_format = '0" bps"'
+    elif fmt == "text":
+        c.alignment = _align("left")
+        c.fill = _fill("FFFBF8F2")
+    elif fmt == "int":
+        c.number_format = '#,##0;-#,##0;"-"'
+    return c
 
-def data_row(ws, row, values, fmts=None, shade=False, colors=None):
-    bg = "FFE8EFF5" if shade else "FFFFFFFF"
-    for ci, val in enumerate(values, 1):
-        c = ws.cell(row=row, column=ci, value=val)
-        color = colors[ci-1] if colors and ci-1 < len(colors) else BLACK_CALC
-        if not color or len(str(color)) < 6:
-            color = BLACK_CALC
-        c.font = _font(color=color, size=10)
-        c.fill = _fill(bg)
-        c.alignment = _align("right" if ci > 1 else "left")
-        c.border = _border("FFD1D5DB")
-        if fmts and ci-1 < len(fmts) and fmts[ci-1]:
-            c.number_format = fmts[ci-1]
+def _row(ws, row, label, val, fmt="dollar", indent=0, bold=False, val_color=None):
+    _label(ws, row, 1, label, bold=bold, indent=indent)
+    _value(ws, row, 2, val, fmt=fmt, bold=bold, color=val_color)
+    ws.row_dimensions[row].height = 16
 
-def spacer_row(ws, row, ncols=8):
-    for ci in range(1, ncols+1):
-        c = ws.cell(row=row, column=ci, value=None)
-        c.fill = _fill("FFFFFFFF")
+def _spacer(ws, row, h=6):
+    ws.row_dimensions[row].height = h
 
-def total_row(ws, row, values, fmts=None):
-    for ci, val in enumerate(values, 1):
-        c = ws.cell(row=row, column=ci, value=val)
-        c.font = _font(bold=True, color=WHITE, size=10)
-        c.fill = _fill(NAVY_MID)
-        c.alignment = _align("right" if ci > 1 else "left")
-        c.border = _border(NAVY_BORDER)
-        if fmts and ci-1 < len(fmts) and fmts[ci-1]:
-            c.number_format = fmts[ci-1]
+def _setup_cols(ws, widths):
+    for i, w in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
 
 
-# ── Tab 1: Cover ──────────────────────────────────────────────────────────────
-
-def build_cover(wb, a):
+# ── TAB 1: Dashboard ──────────────────────────────────────────────────────────
+def _tab_dashboard(wb, a):
     ws = wb.active
-    ws.title = "Cover"
+    ws.title = "Dashboard"
     ws.sheet_view.showGridLines = False
+    ws.sheet_properties.tabColor = "9A7A14"
 
-    # Column widths
-    for i, w in enumerate([2, 28, 22, 18, 18, 2], 1):
-        set_col_width(ws, i, w)
+    tx  = a.get("transaction", {})
+    rr  = a.get("riskRating", {})
+    gd  = a.get("gdscr", {})
+    bs  = a.get("balanceSheet", {})
+    ac  = a.get("aircraft", {})
+    col = a.get("collateral", {})
 
-    r = 1
-    # Title band
-    ws.merge_cells(f"B{r}:E{r}")
-    c = ws.cell(row=r, column=2, value="AIRELOGIX — UNDERWRITER WORKBOOK")
-    c.font = _font(bold=True, color=GOLD_LIGHT, size=14)
-    c.fill = _fill(NAVY_BASE)
+    _setup_cols(ws, [32, 20, 4, 32, 20])
+
+    # Title block
+    ws.row_dimensions[1].height = 30
+    c = ws.cell(row=1, column=1, value="AIRELOGIX UNDERWRITING WORKBOOK")
+    c.font = _font(bold=True, color=GOLD, size=14)
+    c.fill = _fill(NAVY)
     c.alignment = _align("left", "center")
-    ws.row_dimensions[r].height = 32
-    r += 1
+    ws.merge_cells("A1:E1")
 
-    ws.merge_cells(f"B{r}:E{r}")
-    c = ws.cell(row=r, column=2, value="CONFIDENTIAL — INTERNAL USE ONLY")
-    c.font = _font(bold=False, color=STEEL, size=9, italic=True)
-    c.fill = _fill(NAVY_BASE)
+    ws.row_dimensions[2].height = 18
+    c = ws.cell(row=2, column=1, value=f"Confidential — {a.get('borrowerName','')} — {a.get('analysisDate','')}")
+    c.font = _font(italic=True, color=STEEL, size=9)
+    c.fill = _fill(NAVY2)
     c.alignment = _align("left", "center")
-    ws.row_dimensions[r].height = 18
-    r += 2
+    ws.merge_cells("A2:E2")
 
-    # Deal summary block
-    apply_section_title(ws, r, 2, "DEAL SUMMARY", colspan=4)
-    ws.row_dimensions[r].height = 22
-    r += 1
+    _spacer(ws, 3, 10)
 
-    summary_rows = [
-        ("Analysis Date",       safe(a.get("analysisDate")),         FMT_TEXT,     BLUE_INPUT),
-        ("Application ID",      safe(a.get("applicationId")),        FMT_TEXT,     BLUE_INPUT),
-        ("Borrower",            safe(a.get("borrowerName")),          FMT_TEXT,     BLUE_INPUT),
-        ("Aircraft",            safe(a["aircraft"]["description"]),   FMT_TEXT,     BLUE_INPUT),
-        ("Serial Number",       safe(a["aircraft"]["serialNumber"]),  FMT_TEXT,     BLUE_INPUT),
-        ("Registration",        safe(a["aircraft"]["registration"]),  FMT_TEXT,     BLUE_INPUT),
-        ("AFTT (hours)",        a["aircraft"].get("aftt"),            FMT_NUMBER,   BLUE_INPUT),
-        ("Engine Program",      safe(a["aircraft"]["engineProgram"]), FMT_TEXT,     BLUE_INPUT),
-    ]
-    for i, (label, val, fmt, vc) in enumerate(summary_rows):
-        apply_kv_row(ws, r, label, val, fmt=fmt, shade=i%2==1, value_color=vc, label_col=2, value_col=3)
-        # Merge value across remaining cols
-        ws.merge_cells(start_row=r, start_column=3, end_row=r, end_column=5)
-        ws.row_dimensions[r].height = 18
-        r += 1
+    # Left column — Credit Summary
+    r = 4
+    _header_row(ws, r, "CREDIT SUMMARY", 2); r+=1
+    _row(ws, r, "Borrower Name", a.get("borrowerName",""), "text", bold=True); r+=1
+    _row(ws, r, "Application ID", a.get("applicationId",""), "text"); r+=1
+    _row(ws, r, "Analysis Date", a.get("analysisDate",""), "text"); r+=1
+    _spacer(ws, r); r+=1
+    _row(ws, r, "AireLogix Risk Rating", str(rr.get("rating","")) + " — " + rr.get("band",""), "text", bold=True,
+         val_color=GREEN if str(rr.get("rating","")) in ["1","2","3"] else AMBER if str(rr.get("rating","")) in ["4","5","6"] else RED); r+=1
+    _row(ws, r, "Disposition", rr.get("disposition",""), "text"); r+=1
+    _spacer(ws, r); r+=1
+    _row(ws, r, "Pro Forma GDSCR", gd.get("gdscr",0), "x", bold=True,
+         val_color=GREEN if gd.get("gdscr",0)>=1.75 else AMBER if gd.get("gdscr",0)>=1.25 else RED); r+=1
+    _row(ws, r, "Net Worth Coverage", bs.get("netWorthCoverage",0), "x"); r+=1
+    _row(ws, r, "Liquidity Ratio", bs.get("liquidityRatio",0), "x"); r+=1
+    _spacer(ws, r); r+=1
 
-    r += 1
+    # Right column — Transaction
+    r2 = 4
+    # Right column header (cols D-E)
+    c_rh = ws.cell(row=r2, column=4, value="TRANSACTION")
+    c_rh.font = _font(bold=True, color=GOLD, size=10)
+    c_rh.fill = _fill(NAVY3)
+    c_rh.alignment = _align("left")
+    ws.merge_cells(start_row=r2, start_column=4, end_row=r2, end_column=5)
+    ws.row_dimensions[r2].height = 22
+    # We'll put right column in columns D-E
+    def _row_r(row, label, val, fmt="dollar", bold=False):
+        c1 = ws.cell(row=row, column=4, value=label)
+        c1.font = _font(bold=bold, color="FF2C3E50", size=9)
+        c1.fill = _fill(LIGHT_BG)
+        c1.alignment = _align("left")
+        c2 = ws.cell(row=row, column=5, value=val)
+        c2.font = _font(bold=bold, size=9)
+        c2.fill = _fill("FFFBF8F2")
+        c2.alignment = _align("right")
+        ws.row_dimensions[row].height = 16
+        if fmt == "dollar": c2.number_format = '$#,##0;($#,##0);"-"'
+        elif fmt == "pct":  c2.number_format = '0.0%;-0.0%;"-"'
+        elif fmt == "x":    c2.number_format = '0.00x;-0.00x;"-"'
+        elif fmt == "text": c2.alignment = _align("left")
 
-    # Rating block
-    apply_section_title(ws, r, 2, "RISK RATING", colspan=4)
-    ws.row_dimensions[r].height = 22
-    r += 1
+    r2 += 1
+    _row_r(r2, "Aircraft", ac.get("description",""), "text", True); r2+=1
+    _row_r(r2, "Serial Number", ac.get("serialNumber",""), "text"); r2+=1
+    _row_r(r2, "Registration", ac.get("registration","N/A"), "text"); r2+=1
+    _row_r(r2, "Engine Program", ac.get("engineProgram",""), "text"); r2+=1
+    _row_r(r2, "Airframe Total Time", ac.get("aftt",0), "int"); r2+=1
+    _spacer(ws, r2); r2+=1
+    _row_r(r2, "Purchase Price", tx.get("purchasePrice",0), "dollar", True); r2+=1
+    _row_r(r2, "Loan Amount", tx.get("loanAmount",0), "dollar"); r2+=1
+    _row_r(r2, "LTV (vs Purchase Price)", tx.get("ltv",0), "pct"); r2+=1
+    _row_r(r2, "LTV (vs AireLogix FMV)", tx.get("ltvVsFMV",0), "pct"); r2+=1
+    _row_r(r2, "AireLogix Est. FMV", col.get("fmv_curve",0), "dollar"); r2+=1
+    _row_r(r2, "Illustrative Rate", tx.get("illustrativeRate",0), "pct"); r2+=1
+    _row_r(r2, "Term (Months)", tx.get("termMonths",0), "int"); r2+=1
+    _row_r(r2, "Est. Monthly Payment", tx.get("monthlyPayment",0), "dollar", True); r2+=1
 
-    rr = a["riskRating"]
-    rating_rows = [
-        ("Composite Score",  rr["composite"]["finalComposite"],  "0.0000",    BLACK_CALC),
-        ("AireLogix Rating", safe(rr["rating"]),                  FMT_TEXT,    BLUE_INPUT),
-        ("Rating Band",      safe(rr["band"]),                    FMT_TEXT,    BLACK_CALC),
-        ("Disposition",      safe(rr["disposition"]),             FMT_TEXT,    BLACK_CALC),
-        ("Floor Applied",    safe(rr["composite"].get("floorTriggered"), "None"), FMT_TEXT, BLACK_CALC),
-    ]
-    for i, (label, val, fmt, vc) in enumerate(rating_rows):
-        apply_kv_row(ws, r, label, val, fmt=fmt, shade=i%2==1, value_color=vc, label_col=2, value_col=3)
-        ws.merge_cells(start_row=r, start_column=3, end_row=r, end_column=5)
-        ws.row_dimensions[r].height = 18
-        r += 1
-
-    r += 1
-
-    # Transaction block
-    apply_section_title(ws, r, 2, "TRANSACTION PARAMETERS", colspan=4)
-    ws.row_dimensions[r].height = 22
-    r += 1
-
-    tx = a["transaction"]
-    tx_rows = [
-        ("Purchase Price",           tx["purchasePrice"],      FMT_CURRENCY,  BLUE_INPUT),
-        ("Requested Loan Amount",    tx["loanAmount"],          FMT_CURRENCY,  BLUE_INPUT),
-        ("Loan-to-Value",            tx["ltv"],                 FMT_PCT,       BLACK_CALC),
-        ("Proposed Term (months)",   tx["termMonths"],          FMT_NUMBER,    BLUE_INPUT),
-        ("Illustrative Rate",        tx["illustrativeRate"],    FMT_PCT,       BLUE_INPUT),
-        ("Monthly P&I (Illus.)",     tx["monthlyPayment"],      FMT_CURRENCY,  BLACK_CALC),
-        ("Annual Aircraft DS",       tx["annualAircraftDS"],    FMT_CURRENCY,  BLACK_CALC),
-        ("Existing Annual DS",       tx["existingAnnualDS"],    FMT_CURRENCY,  BLUE_INPUT),
-        ("Total Pro Forma DS",       tx["totalProFormaDS"],     FMT_CURRENCY,  BLACK_CALC),
-    ]
-    for i, (label, val, fmt, vc) in enumerate(tx_rows):
-        apply_kv_row(ws, r, label, val, fmt=fmt, shade=i%2==1, value_color=vc, label_col=2, value_col=3)
-        ws.merge_cells(start_row=r, start_column=3, end_row=r, end_column=5)
-        ws.row_dimensions[r].height = 18
-        r += 1
-
-    r += 1
-
-    # Rate note
-    ws.merge_cells(f"B{r}:E{r}")
-    c = ws.cell(row=r, column=2, value=safe(tx.get("rateNote")))
-    c.font = _font(italic=True, color=STEEL, size=8)
-    c.alignment = _align("left", "center", wrap=True)
-    ws.row_dimensions[r].height = 28
-
-    # Freeze top row
-    ws.freeze_panes = "B3"
+    # Flags section
+    flags = a.get("flags", [])
+    if flags:
+        r = max(r, r2) + 2
+        _header_row(ws, r, f"FLAGS & EXCEPTIONS ({len(flags)} flagged)", 5); r+=1
+        for f in flags:
+            sev = f.get("severity","")
+            sev_color = RED if sev=="CRITICAL" else AMBER if sev=="MATERIAL" else STEEL
+            c = ws.cell(row=r, column=1, value=f"  [{sev}] {f.get('title','')}")
+            c.font = _font(color=sev_color, size=9)
+            c.fill = _fill(LIGHT_BG)
+            c.alignment = _align("left")
+            ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=5)
+            ws.row_dimensions[r].height = 16
+            r+=1
 
 
-# ── Tab 2: Income ─────────────────────────────────────────────────────────────
-
-def build_income(wb, a):
+# ── TAB 2: Income ─────────────────────────────────────────────────────────────
+def _tab_income(wb, a):
     ws = wb.create_sheet("Income")
     ws.sheet_view.showGridLines = False
+    ws.sheet_properties.tabColor = "2D9E5F"
+    _setup_cols(ws, [36, 18, 18, 18, 18])
 
-    inc = a["incomeNormalization"]
-    years = inc.get("taxYears", ["Year 1", "Year 2"])
-    y1, y2 = str(years[0]), str(years[1])
-
-    for i, w in enumerate([2, 32, 16, 16, 20, 2], 1):
-        set_col_width(ws, i, w)
+    inc = a.get("incomeNormalization", {})
+    years = inc.get("taxYears", [2023, 2024])
+    y1 = years[0] if len(years) > 0 else "Year 1"
+    y2 = years[1] if len(years) > 1 else "Year 2"
+    gov_yr = inc.get("qualifyingYear") or inc.get("governingYear") or y1
 
     r = 1
-    ws.merge_cells(f"B{r}:E{r}")
-    c = ws.cell(row=r, column=2, value="INCOME NORMALIZATION")
-    c.font = _font(bold=True, color=GOLD_LIGHT, size=13)
-    c.fill = _fill(NAVY_BASE)
-    c.alignment = _align("left", "center")
-    ws.row_dimensions[r].height = 28
-    r += 2
+    c = ws.cell(row=r, column=1, value="INCOME NORMALIZATION")
+    c.font = _font(bold=True, color=GOLD, size=12)
+    c.fill = _fill(NAVY)
+    ws.merge_cells(f"A{r}:E{r}")
+    ws.row_dimensions[r].height = 26; r+=1
 
-    # Income source table
-    apply_section_title(ws, r, 2, "INCOME BY SOURCE", colspan=4)
-    ws.row_dimensions[r].height = 22
-    r += 1
+    c = ws.cell(row=r, column=1, value=inc.get("note",""))
+    c.font = _font(italic=True, color=STEEL, size=8)
+    c.fill = _fill(NAVY2)
+    ws.merge_cells(f"A{r}:E{r}")
+    ws.row_dimensions[r].height = 16; r+=1
+    _spacer(ws, r); r+=1
 
-    apply_header_row(ws, r, ["", "Income Source", y1, y2, "Treatment"])
-    ws.row_dimensions[r].height = 18
-    r += 1
+    # Column headers
+    _header_row(ws, r, "INCOME DETAIL", 5); r+=1
+    for col_i, label in enumerate(["Source", str(y1), str(y2), "Qualifying", "Notes"], 1):
+        c = ws.cell(row=r, column=col_i, value=label)
+        c.font = _font(bold=True, color=WHITE, size=9)
+        c.fill = _fill(NAVY3)
+        c.alignment = _align("center" if col_i > 1 else "left")
+    ws.row_dimensions[r].height = 18; r+=1
 
-    sources = []
+    # W2
     for w2 in inc.get("w2Detail", []):
-        sources.append(("W-2", safe(w2.get("employer","W-2 Income")), w2.get("year1",0), w2.get("year2",0), "Qualifying"))
-    for k1 in inc.get("k1Detail", []):
-        y1v = k1.get("year1Box1", 0) or 0
-        y2v = k1.get("year2Box1", 0) or 0
-        treatment = "Loss — excluded" if y1v < 0 or y2v < 0 else f"Qualifying ({k1.get('participationType','')})"
-        sources.append(("K-1", safe(k1.get("entityName","")), y1v, y2v, treatment))
-    pi = inc.get("portfolioIncome", {})
-    if pi.get("year1") or pi.get("year2"):
-        sources.append(("Portfolio", "Interest / Dividends", pi.get("year1",0), pi.get("year2",0), "Qualifying"))
-    cg = inc.get("capitalGains", {})
-    if cg.get("year1") or cg.get("year2"):
-        sources.append(("Cap Gains", "Capital Gains", cg.get("year1",0), cg.get("year2",0), "Excluded — non-recurring"))
+        ws.cell(row=r, column=1, value="  W-2 Wages — " + w2.get("employer","")).font = _font(size=9)
+        ws.cell(row=r, column=1).fill = _fill(LIGHT_BG)
+        _value(ws, r, 2, w2.get("year1",0))
+        _value(ws, r, 3, w2.get("year2",0))
+        _value(ws, r, 4, min(w2.get("year1",0), w2.get("year2",0)))
+        ws.row_dimensions[r].height = 16; r+=1
 
-    for i, (stype, name, v1, v2, treatment) in enumerate(sources):
-        shade = i % 2 == 1
-        bg = "FFE8EFF5" if shade else "FFFFFFFF"
-        for ci, (val, fmt, col) in enumerate([
-            (stype, FMT_TEXT, "FF6B7280"),
-            (name,  FMT_TEXT, BLACK_CALC),
-            (v1,    FMT_CURRENCY, BLUE_INPUT),
-            (v2,    FMT_CURRENCY, BLUE_INPUT),
-            (treatment, FMT_TEXT, BLACK_CALC),
-        ], 1):
-            c = ws.cell(row=r, column=ci+1, value=val)
-            c.font = _font(color=col, size=10)
-            c.fill = _fill(bg)
-            c.alignment = _align("left" if ci <= 2 else "right")
-            c.border = _border("FFD1D5DB")
-            c.number_format = fmt
-        ws.row_dimensions[r].height = 17
-        r += 1
+    # K-1s
+    for k1 in inc.get("k1Detail", []):
+        excluded = k1.get("excluded", False)
+        color = STEEL if excluded else BLACK_CALC
+        ws.cell(row=r, column=1, value="  K-1 — " + k1.get("entityName","")).font = _font(size=9, color=color)
+        ws.cell(row=r, column=1).fill = _fill(LIGHT_BG)
+        _value(ws, r, 2, k1.get("year1Box1",0) or k1.get("qualifyingIncome",0))
+        _value(ws, r, 3, k1.get("year2Box1",0) or k1.get("qualifyingIncome",0))
+        qi = 0 if excluded else k1.get("qualifyingIncome",0)
+        _value(ws, r, 4, qi, color=STEEL if excluded else BLACK_CALC)
+        note = k1.get("exclusionReason") or k1.get("note") or ("Excluded — LP passive" if excluded else k1.get("participationType",""))
+        ws.cell(row=r, column=5, value=note).font = _font(size=8, italic=True, color=STEEL)
+        ws.cell(row=r, column=5).fill = _fill("FFFBF8F2")
+        ws.row_dimensions[r].height = 16; r+=1
+
+    # Portfolio income
+    pi = inc.get("portfolioIncome", {})
+    if pi:
+        for k, v in pi.items():
+            if v:
+                ws.cell(row=r, column=1, value=f"  {k.title()}").font = _font(size=9)
+                ws.cell(row=r, column=1).fill = _fill(LIGHT_BG)
+                _value(ws, r, 4, v)
+                ws.row_dimensions[r].height = 16; r+=1
+
+    _spacer(ws, r); r+=1
 
     # Totals
-    total_row(ws, r, ["", "TOTAL QUALIFYING INCOME", inc.get("year1Total",0), inc.get("year2Total",0), ""],
-              fmts=[None, None, FMT_CURRENCY, FMT_CURRENCY, None])
-    ws.row_dimensions[r].height = 20
-    r += 2
+    _header_row(ws, r, "QUALIFYING INCOME SUMMARY", 5); r+=1
+    _row(ws, r, "Year 1 Gross Income", inc.get("year1Total",0), bold=False); r+=1
+    _row(ws, r, "Year 2 Gross Income", inc.get("year2Total",0), bold=False); r+=1
 
-    # Normalization summary
-    apply_section_title(ws, r, 2, "NORMALIZATION SUMMARY — LOWER YEAR METHODOLOGY", colspan=4)
-    ws.row_dimensions[r].height = 22
-    r += 1
+    var = inc.get("variancePct",0)
+    var_color = RED if abs(var) > 25 else AMBER if abs(var) > 15 else BLACK_CALC
+    _row(ws, r, "Year-over-Year Variance", var/100 if var else 0, "pct", val_color=var_color); r+=1
+    _row(ws, r, f"Governing Year ({gov_yr})", inc.get("qualifyingIncome",0), bold=True,
+         val_color=GREEN); r+=1
+    _row(ws, r, "Estimated Taxes (36% effective)", inc.get("taxesPaidLowerYear",0)); r+=1
+    _row(ws, r, "After-Tax Qualifying Income", inc.get("afterTaxQualifyingIncome",0), bold=False); r+=1
 
-    norm_rows = [
-        ("Qualifying Year (Lower Year Governs)",  inc.get("qualifyingYear"),               FMT_NUMBER,  BLUE_INPUT),
-        (f"{y1} Total Qualifying Income",          inc.get("year1Total"),                  FMT_CURRENCY, BLUE_INPUT),
-        (f"{y2} Total Qualifying Income",          inc.get("year2Total"),                  FMT_CURRENCY, BLUE_INPUT),
-        ("Income Variance ($)",                    inc.get("variance"),                    FMT_CURRENCY, BLACK_CALC),
-        ("Income Variance (%)",                    inc.get("variancePct"),                 FMT_PCT,      BLACK_CALC),
-        ("Variance Flag (>20%)",                   "YES ⚠" if inc.get("varianceFlag") else "No", FMT_TEXT, RED if inc.get("varianceFlag") else GREEN),
-        ("Qualifying Income (Gross)",              inc.get("qualifyingIncome"),            FMT_CURRENCY, BLACK_CALC),
-        ("Taxes Paid — Qualifying Year",           inc.get("taxesPaidLowerYear"),          FMT_CURRENCY, BLUE_INPUT),
-        ("After-Tax Qualifying Income",            inc.get("afterTaxQualifyingIncome"),    FMT_CURRENCY, BLACK_CALC),
+
+# ── TAB 3: K-1 Detail ────────────────────────────────────────────────────────
+def _tab_k1(wb, a):
+    ws = wb.create_sheet("K-1 Detail")
+    ws.sheet_view.showGridLines = False
+    ws.sheet_properties.tabColor = "C8A96E"
+    _setup_cols(ws, [30, 22, 14, 14, 16, 24])
+
+    inc = a.get("incomeNormalization", {})
+    k1s = inc.get("k1Detail", [])
+    years = inc.get("taxYears", [2023, 2024])
+    y1 = years[0] if len(years) > 0 else "Year 1"
+    y2 = years[1] if len(years) > 1 else "Year 2"
+
+    r = 1
+    c = ws.cell(row=r, column=1, value="K-1 SCHEDULE DETAIL")
+    c.font = _font(bold=True, color=GOLD, size=12)
+    c.fill = _fill(NAVY)
+    ws.merge_cells(f"A{r}:F{r}")
+    ws.row_dimensions[r].height = 26; r+=1
+    _spacer(ws, r); r+=1
+
+    _header_row(ws, r, "PASS-THROUGH ENTITY ANALYSIS", 6); r+=1
+    headers = ["Entity Name", "Participation Type", str(y1) + " Box 1", str(y2) + " Box 1", "Qualifying Income", "Notes"]
+    for col_i, h in enumerate(headers, 1):
+        c = ws.cell(row=r, column=col_i, value=h)
+        c.font = _font(bold=True, color=WHITE, size=9)
+        c.fill = _fill(NAVY3)
+        c.alignment = _align("center" if col_i > 2 else "left")
+    ws.row_dimensions[r].height = 18; r+=1
+
+    for k1 in k1s:
+        excluded = k1.get("excluded", False)
+        bg = "FFF5F0E8" if not excluded else "FFF0F0F0"
+        color = STEEL if excluded else BLACK_CALC
+
+        cells = [
+            k1.get("entityName",""),
+            k1.get("participationType",""),
+            k1.get("year1Box1",0) or 0,
+            k1.get("year2Box1",0) or 0,
+            0 if excluded else (k1.get("qualifyingIncome",0) or 0),
+            k1.get("exclusionReason") or k1.get("note","") or ("Excluded — LP passive" if excluded else "Active qualifying")
+        ]
+        fmts = ["text","text","dollar","dollar","dollar","text"]
+        for col_i, (val, fmt) in enumerate(zip(cells, fmts), 1):
+            c = ws.cell(row=r, column=col_i, value=val)
+            c.font = _font(size=9, color=color, italic=excluded)
+            c.fill = _fill(bg)
+            c.alignment = _align("right" if fmt == "dollar" else "left")
+            if fmt == "dollar":
+                c.number_format = '$#,##0;($#,##0);"-"'
+        ws.row_dimensions[r].height = 16; r+=1
+
+    if not k1s:
+        c = ws.cell(row=r, column=1, value="No K-1 detail available — income sourced from W-2 or self-reported")
+        c.font = _font(italic=True, color=STEEL, size=9)
+        c.fill = _fill(LIGHT_BG)
+        ws.merge_cells(f"A{r}:F{r}")
+        ws.row_dimensions[r].height = 16; r+=1
+
+    _spacer(ws, r); r+=1
+    _header_row(ws, r, "METHODOLOGY NOTES", 6); r+=1
+    notes = [
+        "Lower of two tax years governs qualifying income (conservative principle)",
+        "LP passive K-1 income excluded per v1.7 methodology",
+        "Section 179 and depreciation add-backs not permitted",
+        "Real estate K-1s: net income after depreciation only",
+        "Capital gains excluded from qualifying income",
     ]
-    for i, (label, val, fmt, vc) in enumerate(norm_rows):
-        lc, vc_cell = apply_kv_row(ws, r, label, val, fmt=fmt, shade=i%2==1, value_color=vc, label_col=2, value_col=4)
-        ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=3)
-        ws.row_dimensions[r].height = 18
-        r += 1
-
-    r += 1
-    ws.merge_cells(f"B{r}:E{r}")
-    c = ws.cell(row=r, column=2, value=safe(inc.get("note")))
-    c.font = _font(italic=True, color=STEEL, size=8)
-    c.alignment = _align("left", wrap=True)
-    ws.row_dimensions[r].height = 22
-
-    ws.freeze_panes = "B2"
+    for note in notes:
+        c = ws.cell(row=r, column=1, value=f"  • {note}")
+        c.font = _font(size=8, italic=True, color=STEEL)
+        c.fill = _fill(LIGHT_BG)
+        ws.merge_cells(f"A{r}:F{r}")
+        ws.row_dimensions[r].height = 14; r+=1
 
 
-# ── Tab 3: Balance Sheet ──────────────────────────────────────────────────────
+# ── TAB 4: Debt Service ───────────────────────────────────────────────────────
+def _tab_debt_service(wb, a):
+    ws = wb.create_sheet("Debt Service")
+    ws.sheet_view.showGridLines = False
+    ws.sheet_properties.tabColor = "0B1E3A"
+    _setup_cols(ws, [36, 20, 20])
 
-def build_balance_sheet(wb, a):
+    tx  = a.get("transaction", {})
+    gd  = a.get("gdscr", {})
+    inc = a.get("incomeNormalization", {})
+
+    r = 1
+    c = ws.cell(row=r, column=1, value="PRO FORMA DEBT SERVICE ANALYSIS")
+    c.font = _font(bold=True, color=GOLD, size=12)
+    c.fill = _fill(NAVY)
+    ws.merge_cells(f"A{r}:C{r}")
+    ws.row_dimensions[r].height = 26; r+=1
+    _spacer(ws, r); r+=1
+
+    _header_row(ws, r, "PROPOSED AIRCRAFT FINANCING", 3); r+=1
+    _row(ws, r, "Purchase Price", tx.get("purchasePrice",0)); r+=1
+    _row(ws, r, "Loan Amount", tx.get("loanAmount",0), bold=True); r+=1
+    _row(ws, r, "Down Payment", tx.get("purchasePrice",0) - tx.get("loanAmount",0)); r+=1
+    _row(ws, r, "LTV (vs Purchase Price)", tx.get("ltv",0), "pct"); r+=1
+    _row(ws, r, "LTV (vs AireLogix FMV)", tx.get("ltvVsFMV",0), "pct"); r+=1
+    _spacer(ws, r); r+=1
+    _row(ws, r, "Illustrative Rate", tx.get("illustrativeRate",0), "pct"); r+=1
+    _row(ws, r, "Rate Basis", tx.get("rateNote",""), "text"); r+=1
+    _row(ws, r, "Term (Months)", tx.get("termMonths",0), "int"); r+=1
+    _row(ws, r, "Est. Monthly Payment (P&I)", tx.get("monthlyPayment",0), bold=True); r+=1
+    _row(ws, r, "Annual Aircraft Debt Service", tx.get("annualAircraftDS",0), bold=True); r+=1
+    _spacer(ws, r); r+=1
+
+    _header_row(ws, r, "EXISTING OBLIGATIONS", 3); r+=1
+    _row(ws, r, "Existing Annual Debt Service", tx.get("existingAnnualDS",0), bold=True); r+=1
+    _spacer(ws, r); r+=1
+
+    _header_row(ws, r, "PRO FORMA GLOBAL DEBT SERVICE", 3); r+=1
+    _row(ws, r, "Aircraft DS (New)", tx.get("annualAircraftDS",0)); r+=1
+    _row(ws, r, "Existing DS", tx.get("existingAnnualDS",0)); r+=1
+    _row(ws, r, "Total Pro Forma DS", tx.get("totalProFormaDS",0), bold=True,
+         val_color=BLACK_CALC); r+=1
+    _spacer(ws, r); r+=1
+
+    _header_row(ws, r, "GDSCR CALCULATION", 3); r+=1
+    _row(ws, r, "Gross Qualifying Income", inc.get("qualifyingIncome",0), bold=True); r+=1
+    _row(ws, r, "Total Pro Forma DS", tx.get("totalProFormaDS",0)); r+=1
+    gdscr = gd.get("gdscr",0)
+    gdscr_color = GREEN if gdscr >= 1.75 else AMBER if gdscr >= 1.25 else RED
+    _row(ws, r, "Pro Forma GDSCR", gdscr, "x", bold=True, val_color=gdscr_color); r+=1
+    _row(ws, r, "Assessment", gd.get("assessment",""), "text"); r+=1
+    _spacer(ws, r); r+=1
+
+    # Balloon projection
+    _header_row(ws, r, "BALLOON PROJECTION (10-YEAR)", 3); r+=1
+    fmv = a.get("collateral",{}).get("fmv_curve",0) or a.get("transaction",{}).get("fmv",0)
+    depr = 0.030
+    for yr in [5, 7, 10]:
+        fmv_at = fmv * ((1-depr)**yr)
+        balloon = fmv_at * 0.70
+        _row(ws, r, f"Projected FMV at Year {yr}", fmv_at); r+=1
+        _row(ws, r, f"  Balloon (70% of FMV)", balloon, indent=1); r+=1
+
+
+# ── TAB 5: Balance Sheet ──────────────────────────────────────────────────────
+def _tab_balance_sheet(wb, a):
     ws = wb.create_sheet("Balance Sheet")
     ws.sheet_view.showGridLines = False
+    ws.sheet_properties.tabColor = "2D9E5F"
+    _setup_cols(ws, [36, 20, 20])
 
-    bs = a["balanceSheet"]
-    gl = bs.get("entityGuaranteeLiquidity", {})
-
-    for i, w in enumerate([2, 32, 18, 16, 16, 2], 1):
-        set_col_width(ws, i, w)
+    bs = a.get("balanceSheet", {})
 
     r = 1
-    ws.merge_cells(f"B{r}:E{r}")
-    c = ws.cell(row=r, column=2, value="BALANCE SHEET ANALYSIS")
-    c.font = _font(bold=True, color=GOLD_LIGHT, size=13)
-    c.fill = _fill(NAVY_BASE)
-    c.alignment = _align("left", "center")
-    ws.row_dimensions[r].height = 28
-    r += 2
+    c = ws.cell(row=r, column=1, value="PERSONAL BALANCE SHEET")
+    c.font = _font(bold=True, color=GOLD, size=12)
+    c.fill = _fill(NAVY)
+    ws.merge_cells(f"A{r}:C{r}")
+    ws.row_dimensions[r].height = 26; r+=1
+    _spacer(ws, r); r+=1
 
-    # Tier 1 liquid assets
-    apply_section_title(ws, r, 2, "TIER 1 — PERSONAL LIQUID ASSETS", colspan=4)
-    ws.row_dimensions[r].height = 22
-    r += 1
-    apply_header_row(ws, r, ["", "Asset Description", "Gross Value", "Encumbrance", "Net Value"])
-    ws.row_dimensions[r].height = 18
-    r += 1
+    _header_row(ws, r, "ASSETS", 3); r+=1
+    _row(ws, r, "Gross Total Assets", bs.get("grossTotalAssets",0), bold=True); r+=1
+    _row(ws, r, "  Gross Liquid Assets (Tier 1)", bs.get("tier1GrossLiquid",0), indent=1); r+=1
+    _row(ws, r, "  Margin Loan Adjustment", -(bs.get("marginLoanAdjustment",0) or 0), indent=1); r+=1
+    _row(ws, r, "  Net Liquid Assets", bs.get("tier1NetLiquid",0), indent=1, bold=True); r+=1
 
-    for i, asset in enumerate(bs.get("tier1Assets", [])):
-        gross = asset.get("value") or asset.get("gross") or 0
-        enc   = asset.get("encumbrance", 0) or 0
-        net   = asset.get("net") if asset.get("net") is not None else gross - enc
-        data_row(ws, r,
-            ["", safe(asset.get("description") or asset.get("institution")), gross, enc, net],
-            fmts=[None, None, FMT_CURRENCY, FMT_CURRENCY, FMT_CURRENCY],
-            shade=i%2==1,
-            colors=["", BLACK_CALC, BLUE_INPUT, BLUE_INPUT, BLACK_CALC]
-        )
-        ws.row_dimensions[r].height = 17
-        r += 1
+    # Tier 1 detail
+    for asset in bs.get("tier1Assets", []):
+        if isinstance(asset, dict):
+            _row(ws, r, f"    {asset.get('description','Asset')}", asset.get("net",0), indent=2); r+=1
 
-    # Margin loans
-    for ml in bs.get("marginLoans", []):
-        data_row(ws, r,
-            ["", f"Margin Loan — {safe(ml.get('institution',''))}", 0, ml.get("balance",0), -ml.get("balance",0)],
-            fmts=[None, None, FMT_CURRENCY, FMT_CURRENCY, FMT_CURRENCY],
-            shade=True,
-            colors=["", RED, None, RED, RED]
-        )
-        ws.row_dimensions[r].height = 17
-        r += 1
+    _spacer(ws, r); r+=1
+    _header_row(ws, r, "LIABILITIES", 3); r+=1
+    _row(ws, r, "Total Liabilities", bs.get("totalLiabilities",0), bold=True); r+=1
+    _spacer(ws, r); r+=1
 
-    total_row(ws, r, ["", "NET PERSONAL LIQUID (POST-MARGIN)", "", "", bs.get("tier1NetLiquid",0)],
-              fmts=[None, None, None, None, FMT_CURRENCY])
-    ws.row_dimensions[r].height = 20
-    r += 2
+    _header_row(ws, r, "NET WORTH", 3); r+=1
+    nw = bs.get("statedNetWorth",0)
+    _row(ws, r, "Stated Net Worth", nw, bold=True,
+         val_color=GREEN if nw > 0 else RED); r+=1
+    _spacer(ws, r); r+=1
 
-    # Entity guarantee adjustment
-    if gl.get("adjustmentApplied"):
-        apply_section_title(ws, r, 2, "ENTITY GUARANTEE — LIQUIDITY ADJUSTMENT", colspan=4)
-        ws.row_dimensions[r].height = 22
-        r += 1
-        apply_header_row(ws, r, ["", "Entity", "Net Assets", "Credit %", "Contribution"])
-        ws.row_dimensions[r].height = 18
-        r += 1
+    _header_row(ws, r, "LIQUIDITY RATIOS", 3); r+=1
+    liq = bs.get("liquidityRatio",0)
+    liq_color = GREEN if liq >= 2.0 else AMBER if liq >= 1.0 else RED
+    _row(ws, r, "Liquidity Ratio (Liquid / Loan)", liq, "x", val_color=liq_color); r+=1
+    _row(ws, r, "Liquidity Assessment", bs.get("liquidityAssessment",""), "text"); r+=1
+    _row(ws, r, "Leverage Ratio (Liab / Assets)", bs.get("leverageRatio",0), "x"); r+=1
 
-        for i, ent in enumerate(gl.get("guaranteeEntities", [])):
-            if ent.get("creditAllowed"):
-                data_row(ws, r,
-                    ["", safe(ent.get("entity")), ent.get("entityNet",0), ent.get("creditPct",0), ent.get("contribution",0)],
-                    fmts=[None, None, FMT_CURRENCY, FMT_PCT1, FMT_CURRENCY],
-                    shade=i%2==1,
-                    colors=["", BLACK_CALC, BLUE_INPUT, BLUE_INPUT, BLACK_CALC]
-                )
-                ws.row_dimensions[r].height = 17
-                r += 1
-
-        total_row(ws, r, ["", "EFFECTIVE LIQUID (ADJUSTED)", gl.get("adjustedLiquid",0), "", ""],
-                  fmts=[None, None, FMT_CURRENCY, None, None])
-        ws.row_dimensions[r].height = 20
-        r += 2
-
-    # Balance sheet summary
-    apply_section_title(ws, r, 2, "BALANCE SHEET SUMMARY", colspan=4)
-    ws.row_dimensions[r].height = 22
-    r += 1
-
-    bs_rows = [
-        ("Gross Total Assets",          bs.get("grossTotalAssets"),     FMT_CURRENCY, BLUE_INPUT),
-        ("Total Liabilities",           bs.get("totalLiabilities"),     FMT_CURRENCY, BLUE_INPUT),
-        ("Stated Net Worth",            bs.get("statedNetWorth"),       FMT_CURRENCY, BLACK_CALC),
-        ("Leverage Ratio",              bs.get("leverageRatio"),        FMT_MULTIPLE, BLACK_CALC),
-    ]
-    for i, (label, val, fmt, vc) in enumerate(bs_rows):
-        lc, vc_cell = apply_kv_row(ws, r, label, val, fmt=fmt, shade=i%2==1, value_color=vc, label_col=2, value_col=4)
-        ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=3)
-        ws.row_dimensions[r].height = 18
-        r += 1
-
-    r += 1
-
-    # Coverage metrics
-    apply_section_title(ws, r, 2, "COVERAGE METRICS", colspan=4)
-    ws.row_dimensions[r].height = 22
-    r += 1
-
-    loan = a["transaction"]["loanAmount"]
-    cov_rows = [
-        ("Loan Amount (Denominator)",            loan,                           FMT_CURRENCY, GREEN_LINK),
-        ("Personal Liquid (Numerator)",          bs.get("tier1NetLiquid"),       FMT_CURRENCY, GREEN_LINK),
-        ("Personal Liquidity Ratio",             bs.get("liquidityRatio"),       FMT_MULTIPLE, BLACK_CALC),
-        ("Effective Liquid (w/ Guarantee)",      gl.get("adjustedLiquid") if gl.get("adjustmentApplied") else bs.get("tier1NetLiquid"), FMT_CURRENCY, GREEN_LINK),
-        ("Adjusted Liquidity Ratio (F2 Input)",  gl.get("adjustedLiquidityRatio") if gl.get("adjustmentApplied") else bs.get("liquidityRatio"), FMT_MULTIPLE, BLACK_CALC),
-        ("Net Worth (Numerator)",                bs.get("statedNetWorth"),       FMT_CURRENCY, GREEN_LINK),
-        ("Net Worth Coverage",                   bs.get("netWorthCoverage"),     FMT_MULTIPLE, BLACK_CALC),
-    ]
-    for i, (label, val, fmt, vc) in enumerate(cov_rows):
-        lc, vc_cell = apply_kv_row(ws, r, label, val, fmt=fmt, shade=i%2==1, value_color=vc, label_col=2, value_col=4)
-        ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=3)
-        ws.row_dimensions[r].height = 18
-        r += 1
-
-    ws.freeze_panes = "B2"
+    # Entity guarantee
+    egl = bs.get("entityGuaranteeLiquidity",{})
+    if egl.get("adjustmentApplied"):
+        _spacer(ws, r); r+=1
+        _header_row(ws, r, "ENTITY GUARANTEE POOL", 3); r+=1
+        _row(ws, r, "Base Personal Liquid", egl.get("baseLiquid",0)); r+=1
+        _row(ws, r, "Entity Guarantee Adjustment", egl.get("guaranteeAdjustment",0)); r+=1
+        _row(ws, r, "Adjusted Effective Liquid", egl.get("adjustedLiquid",0), bold=True); r+=1
+        _row(ws, r, "Adjusted Liquidity Ratio", egl.get("adjustedLiquidityRatio",0), "x"); r+=1
 
 
-# ── Tab 4: GDSCR ──────────────────────────────────────────────────────────────
-
-def build_gdscr(wb, a):
-    ws = wb.create_sheet("GDSCR")
+# ── TAB 6: Net Worth & Leverage ───────────────────────────────────────────────
+def _tab_nw_leverage(wb, a):
+    ws = wb.create_sheet("Net Worth & Leverage")
     ws.sheet_view.showGridLines = False
+    ws.sheet_properties.tabColor = "9A7A14"
+    _setup_cols(ws, [36, 20, 20])
 
-    tx  = a["transaction"]
-    inc = a["incomeNormalization"]
-    g   = a["gdscr"]
-
-    for i, w in enumerate([2, 34, 22, 16, 2], 1):
-        set_col_width(ws, i, w)
+    bs  = a.get("balanceSheet", {})
+    tx  = a.get("transaction", {})
+    gd  = a.get("gdscr", {})
+    loan = tx.get("loanAmount", 0)
+    nw   = bs.get("statedNetWorth", 0)
+    liq  = bs.get("tier1NetLiquid", 0)
 
     r = 1
-    ws.merge_cells(f"B{r}:D{r}")
-    c = ws.cell(row=r, column=2, value="GLOBAL DEBT SERVICE COVERAGE RATIO")
-    c.font = _font(bold=True, color=GOLD_LIGHT, size=13)
-    c.fill = _fill(NAVY_BASE)
-    c.alignment = _align("left", "center")
-    ws.row_dimensions[r].height = 28
-    r += 2
+    c = ws.cell(row=r, column=1, value="NET WORTH & LEVERAGE ANALYSIS")
+    c.font = _font(bold=True, color=GOLD, size=12)
+    c.fill = _fill(NAVY)
+    ws.merge_cells(f"A{r}:C{r}")
+    ws.row_dimensions[r].height = 26; r+=1
+    _spacer(ws, r); r+=1
 
-    # Income
-    apply_section_title(ws, r, 2, "QUALIFYING INCOME", colspan=3)
-    ws.row_dimensions[r].height = 22
-    r += 1
+    _header_row(ws, r, "COVERAGE MULTIPLES", 3); r+=1
+    nw_cov = nw/loan if loan else 0
+    nw_color = GREEN if nw_cov >= 3.0 else AMBER if nw_cov >= 1.5 else RED
+    _row(ws, r, "Net Worth Coverage (NW / Loan)", nw_cov, "x", bold=True, val_color=nw_color); r+=1
+    liq_cov = liq/loan if loan else 0
+    liq_color = GREEN if liq_cov >= 1.5 else AMBER if liq_cov >= 1.0 else RED
+    _row(ws, r, "Liquidity Coverage (Liq / Loan)", liq_cov, "x", bold=True, val_color=liq_color); r+=1
+    _row(ws, r, "GDSCR (Income / Total DS)", gd.get("gdscr",0), "x"); r+=1
+    _spacer(ws, r); r+=1
 
-    inc_rows = [
-        ("Qualifying Year",                    inc.get("qualifyingYear"),                  FMT_NUMBER,   BLUE_INPUT),
-        ("Gross Qualifying Income",            inc.get("qualifyingIncome"),                FMT_CURRENCY, GREEN_LINK),
-        ("Taxes Paid — Qualifying Year",       inc.get("taxesPaidLowerYear"),              FMT_CURRENCY, GREEN_LINK),
-        ("After-Tax Qualifying Income",        inc.get("afterTaxQualifyingIncome"),        FMT_CURRENCY, BLACK_CALC),
+    _header_row(ws, r, "BALANCE SHEET COMPOSITION", 3); r+=1
+    gross = bs.get("grossTotalAssets",0)
+    liab  = bs.get("totalLiabilities",0)
+    _row(ws, r, "Gross Total Assets", gross); r+=1
+    _row(ws, r, "Total Liabilities", liab); r+=1
+    _row(ws, r, "Stated Net Worth", nw, bold=True); r+=1
+    _row(ws, r, "Leverage (Liab / Assets)", liab/gross if gross else 0, "x"); r+=1
+    _row(ws, r, "Liquid as % of Total Assets", liq/gross if gross else 0, "pct"); r+=1
+    _spacer(ws, r); r+=1
+
+    _header_row(ws, r, "GUARANTEE STRUCTURE", 3); r+=1
+    guarantors = a.get("guarantors", [])
+    for g in guarantors:
+        _row(ws, r, g.get("name","") + " — " + g.get("type",""), "", "text", bold=True); r+=1
+        _row(ws, r, "  Net Worth", g.get("netWorth",0), indent=1); r+=1
+        _row(ws, r, "  Liquid Assets", g.get("liquidAssets",0), indent=1); r+=1
+        _row(ws, r, "  Guarantee Type", g.get("guaranteeType",""), "text", indent=1); r+=1
+        _spacer(ws, r); r+=1
+
+    _header_row(ws, r, "BENCHMARK THRESHOLDS", 3); r+=1
+    benchmarks = [
+        ("Net Worth Coverage", "≥ 3.0x", "Strong", "2.0-3.0x", "Adequate", "< 2.0x", "Weak"),
+        ("Liquidity Coverage", "≥ 1.5x", "Strong", "1.0-1.5x", "Adequate", "< 1.0x", "Critical"),
+        ("GDSCR",             "≥ 1.75x","Strong", "1.25-1.75x","Adequate","< 1.25x","Marginal"),
     ]
-    for i2, (label, val, fmt, vc) in enumerate(inc_rows):
-        lc, vc_cell = apply_kv_row(ws, r, label, val, fmt=fmt, shade=i2%2==1, value_color=vc, label_col=2, value_col=3)
-        ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=2)
-        ws.row_dimensions[r].height = 18
-        r += 1
-
-    r += 1
-
-    # Debt service build
-    apply_section_title(ws, r, 2, "PRO FORMA DEBT SERVICE BUILD", colspan=3)
-    ws.row_dimensions[r].height = 22
-    r += 1
-
-    ds_rows = [
-        ("Loan Amount",                        tx.get("loanAmount"),           FMT_CURRENCY, BLUE_INPUT),
-        ("Illustrative Rate (All-In)",         tx.get("illustrativeRate"),     FMT_PCT,      BLUE_INPUT),
-        ("Term (months)",                      tx.get("termMonths"),           FMT_NUMBER,   BLUE_INPUT),
-        ("Monthly P&I Payment (Illustrative)", tx.get("monthlyPayment"),       FMT_CURRENCY, BLACK_CALC),
-        ("Annual Aircraft Debt Service",       tx.get("annualAircraftDS"),     FMT_CURRENCY, BLACK_CALC),
-        ("Existing Annual Debt Service",       tx.get("existingAnnualDS"),     FMT_CURRENCY, BLUE_INPUT),
-        ("Total Pro Forma Annual DS",          tx.get("totalProFormaDS"),      FMT_CURRENCY, BLACK_CALC),
-    ]
-    for i2, (label, val, fmt, vc) in enumerate(ds_rows):
-        lc, vc_cell = apply_kv_row(ws, r, label, val, fmt=fmt, shade=i2%2==1, value_color=vc, label_col=2, value_col=3)
-        ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=2)
-        ws.row_dimensions[r].height = 18
-        r += 1
-
-    r += 1
-
-    # GDSCR result
-    apply_section_title(ws, r, 2, "GDSCR RESULT", colspan=3)
-    ws.row_dimensions[r].height = 22
-    r += 1
-
-    gdscr_rows = [
-        ("After-Tax Qualifying Income",  g.get("afterTaxIncome"),    FMT_CURRENCY, GREEN_LINK),
-        ("Total Pro Forma Annual DS",    g.get("totalAnnualDS"),     FMT_CURRENCY, GREEN_LINK),
-        ("Pro Forma GDSCR",              g.get("gdscr"),             FMT_MULTIPLE, BLACK_CALC),
-        ("Assessment",                   safe(g.get("assessment")),  FMT_TEXT,     BLACK_CALC),
-    ]
-    for i2, (label, val, fmt, vc) in enumerate(gdscr_rows):
-        color = vc
-        if label == "Pro Forma GDSCR":
-            gdscr_val = g.get("gdscr") or 0
-            color = GREEN if gdscr_val >= 1.5 else AMBER if gdscr_val >= 1.0 else RED
-        lc, vc_cell = apply_kv_row(ws, r, label, val, fmt=fmt, shade=i2%2==1, value_color=color, label_col=2, value_col=3)
-        ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=2)
-        ws.row_dimensions[r].height = 18
-        r += 1
-
-    r += 2
-    ws.merge_cells(f"B{r}:D{r}")
-    c = ws.cell(row=r, column=2, value=safe(tx.get("rateNote")))
-    c.font = _font(italic=True, color=STEEL, size=8)
-    c.alignment = _align("left", wrap=True)
-    ws.row_dimensions[r].height = 28
-
-    ws.freeze_panes = "B2"
+    for b in benchmarks:
+        c = ws.cell(row=r, column=1, value=b[0])
+        c.font = _font(bold=True, size=9)
+        c.fill = _fill(LIGHT_BG)
+        c2 = ws.cell(row=r, column=2, value=f"{b[1]} = {b[2]}  |  {b[3]} = {b[4]}  |  {b[5]} = {b[6]}")
+        c2.font = _font(size=8, italic=True, color=STEEL)
+        c2.fill = _fill("FFFBF8F2")
+        ws.row_dimensions[r].height = 16; r+=1
 
 
-# ── Tab 5: Scorecard ──────────────────────────────────────────────────────────
-
-def build_scorecard(wb, a):
-    ws = wb.create_sheet("Scorecard")
+# ── TAB 7: Collateral ─────────────────────────────────────────────────────────
+def _tab_collateral(wb, a):
+    ws = wb.create_sheet("Collateral")
     ws.sheet_view.showGridLines = False
+    ws.sheet_properties.tabColor = "C8A96E"
+    _setup_cols(ws, [36, 20, 20, 20])
 
-    rr = a["riskRating"]
-    fs = rr["factorScores"]
-
-    for i, w in enumerate([2, 26, 10, 10, 12, 28, 2], 1):
-        set_col_width(ws, i, w)
+    col = a.get("collateral", {})
+    tx  = a.get("transaction", {})
+    ac  = a.get("aircraft", {})
+    fmv = col.get("fmv_curve", 0) or tx.get("fmv", 0)
+    loan = tx.get("loanAmount", 0)
 
     r = 1
-    ws.merge_cells(f"B{r}:F{r}")
-    c = ws.cell(row=r, column=2, value="RISK RATING SCORECARD")
-    c.font = _font(bold=True, color=GOLD_LIGHT, size=13)
-    c.fill = _fill(NAVY_BASE)
-    c.alignment = _align("left", "center")
-    ws.row_dimensions[r].height = 28
-    r += 2
+    c = ws.cell(row=r, column=1, value="COLLATERAL ANALYSIS")
+    c.font = _font(bold=True, color=GOLD, size=12)
+    c.fill = _fill(NAVY)
+    ws.merge_cells(f"A{r}:D{r}")
+    ws.row_dimensions[r].height = 26; r+=1
+    _spacer(ws, r); r+=1
 
-    apply_section_title(ws, r, 2, "SIX-FACTOR SCORING MODEL", colspan=5)
-    ws.row_dimensions[r].height = 22
-    r += 1
+    _header_row(ws, r, "AIRCRAFT DESCRIPTION", 4); r+=1
+    _row(ws, r, "Description", ac.get("description",""), "text", bold=True); r+=1
+    _row(ws, r, "Serial Number", col.get("sn","") or ac.get("serialNumber",""), "text"); r+=1
+    _row(ws, r, "Registration", col.get("registration","") or ac.get("registration","N/A"), "text"); r+=1
+    _row(ws, r, "Model Year", col.get("year", ac.get("year",0)), "int"); r+=1
+    _row(ws, r, "Airframe Total Time", col.get("aftt", ac.get("aftt",0)), "int"); r+=1
+    _row(ws, r, "Engine Program", col.get("engine_program","") or ac.get("engineProgram",""), "text"); r+=1
+    _spacer(ws, r); r+=1
 
-    apply_header_row(ws, r, ["", "Factor", "Weight", "Score /8", "Weighted", "Basis"])
-    ws.row_dimensions[r].height = 18
-    r += 1
+    _header_row(ws, r, "VALUATION", 4); r+=1
+    _row(ws, r, "Curve Used", col.get("curveName","AireLogix Curve"), "text"); r+=1
+    _row(ws, r, "AireLogix Est. FMV", fmv, bold=True,
+         val_color=GREEN); r+=1
+    _row(ws, r, "Purchase Price", col.get("fmv_purchase_price",0) or tx.get("purchasePrice",0)); r+=1
+    pp_vs_fmv = (col.get("fmv_purchase_price",0) / fmv - 1) if fmv else 0
+    pp_color = GREEN if abs(pp_vs_fmv) < 0.05 else AMBER if abs(pp_vs_fmv) < 0.15 else RED
+    _row(ws, r, "Purchase Price vs FMV", pp_vs_fmv, "pct", val_color=pp_color); r+=1
+    _row(ws, r, "Loan Amount", loan); r+=1
+    _row(ws, r, "LTV vs AireLogix FMV", col.get("ltv_on_curve_fmv",0)/100, "pct", bold=True); r+=1
+    _row(ws, r, "LTV vs Purchase Price", col.get("ltv_on_purchase_price",0)/100, "pct"); r+=1
+    _spacer(ws, r); r+=1
 
-    factors = [
-        ("F1_GDSCR",         "F1 — GDSCR",           0.25),
-        ("F2_Liquidity",     "F2 — Liquidity",        0.22),
-        ("F3_NetWorth",      "F3 — Net Worth",        0.18),
-        ("F4_IncomeQuality", "F4 — Income Quality",   0.17),
-        ("F5_LTV",           "F5 — LTV",              0.10),
-        ("F6_Collateral",    "F6 — Collateral",       0.08),
-    ]
+    # Forward depreciation table
+    _header_row(ws, r, "FORWARD DEPRECIATION SCHEDULE (Base 3.0% / Bear 5.0% annual)", 4); r+=1
+    for col_i, h in enumerate(["Year", "Base FMV", "Bear FMV", "Loan Balance (Est.)"], 1):
+        c = ws.cell(row=r, column=col_i, value=h)
+        c.font = _font(bold=True, color=WHITE, size=9)
+        c.fill = _fill(NAVY3)
+        c.alignment = _align("center" if col_i > 1 else "left")
+    ws.row_dimensions[r].height = 18; r+=1
 
-    for i, (key, label, weight) in enumerate(factors):
-        factor = fs.get(key, {})
-        score  = factor.get("score")
-        weighted = factor.get("weighted")
-        basis  = safe(factor.get("basis"))
-        shade  = i % 2 == 1
-        bg     = "FFE8EFF5" if shade else "FFFFFFFF"
+    base_rate = 0.030
+    bear_rate = 0.050
+    mo_rate   = tx.get("illustrativeRate",0.063)/12
+    mo_pmt    = tx.get("monthlyPayment",0)
+    bal = loan
 
-        score_color = GREEN if score and score <= 2 else \
-                      GOLD  if score and score <= 3.5 else \
-                      AMBER if score and score <= 5.5 else RED
+    for yr in range(0, 11):
+        fmv_base = fmv * ((1-base_rate)**yr)
+        fmv_bear = fmv * ((1-bear_rate)**yr)
+        if yr > 0:
+            for _ in range(12):
+                interest = bal * mo_rate
+                principal = max(mo_pmt - interest, 0)
+                bal = max(bal - principal, 0)
 
-        for ci, (val, fmt, col, align) in enumerate([
-            ("",       None,         BLACK_CALC,  "left"),
-            (label,    FMT_TEXT,     BLACK_CALC,  "left"),
-            (weight,   FMT_PCT1,     BLACK_CALC,  "center"),
-            (score,    "0.0",        score_color, "center"),
-            (weighted, "0.0000",     BLACK_CALC,  "center"),
-            (basis,    FMT_TEXT,     "FF6B7280",  "left"),
-        ], 1):
-            c = ws.cell(row=r, column=ci, value=val)
-            c.font = _font(color=col, size=10, bold=(ci==2))
-            c.fill = _fill(bg)
-            c.alignment = _align(align)
-            c.border = _border("FFD1D5DB")
-            if fmt: c.number_format = fmt
-        ws.row_dimensions[r].height = 18
-        r += 1
+        ws.cell(row=r, column=1, value=f"Year {yr}" if yr > 0 else "Now").font = _font(size=9)
+        ws.cell(row=r, column=1).fill = _fill(LIGHT_BG)
+        _value(ws, r, 2, round(fmv_base))
+        _value(ws, r, 3, round(fmv_bear))
+        _value(ws, r, 4, round(bal))
+        ws.row_dimensions[r].height = 15; r+=1
 
-    # Composite total row
-    comp = rr["composite"]
-    for ci, (val, fmt, col) in enumerate([
-        ("",                      None,     WHITE),
-        ("COMPOSITE SCORE",       None,     WHITE),
-        (comp.get("preFloorComposite"), "0.0000", GOLD_LIGHT),
-        ("→",                     None,     GOLD_LIGHT),
-        (comp.get("finalComposite"),    "0.0000", GOLD_LIGHT),
-        (f"Rating {rr['rating']} — {rr['band']}", None, GOLD_LIGHT),
-    ], 1):
-        c = ws.cell(row=r, column=ci, value=val)
-        c.font = _font(bold=True, color=col, size=11)
-        c.fill = _fill(NAVY_MID)
-        c.alignment = _align("center" if ci > 2 else "left")
-        c.border = _border(NAVY_BORDER)
-        if fmt: c.number_format = fmt
+
+# ── TAB 8: Risk Rating ────────────────────────────────────────────────────────
+def _tab_risk_rating(wb, a):
+    ws = wb.create_sheet("Risk Rating")
+    ws.sheet_view.showGridLines = False
+    ws.sheet_properties.tabColor = "E8CC9A"
+    _setup_cols(ws, [36, 14, 14, 14, 22])
+
+    rr = a.get("riskRating", {})
+    fs = rr.get("factorScores", {})
+    comp = rr.get("composite", {})
+
+    r = 1
+    c = ws.cell(row=r, column=1, value="AIRELOGIX RISK RATING (ORR)")
+    c.font = _font(bold=True, color=GOLD, size=12)
+    c.fill = _fill(NAVY)
+    ws.merge_cells(f"A{r}:E{r}")
+    ws.row_dimensions[r].height = 26; r+=1
+    _spacer(ws, r); r+=1
+
+    rating = str(rr.get("rating",""))
+    band   = rr.get("band","")
+    rating_color = GREEN if rating in ["1","2","3"] else AMBER if rating in ["4","5","6"] else RED
+
+    # Rating badge
+    _header_row(ws, r, "FINAL RATING", 5); r+=1
+    c = ws.cell(row=r, column=1, value=f"ORR {rating} — {band}")
+    c.font = _font(bold=True, color=rating_color, size=14)
+    c.fill = _fill(LIGHT_BG)
+    ws.merge_cells(f"A{r}:B{r}")
     ws.row_dimensions[r].height = 24
-    r += 2
 
-    # Disposition
-    apply_section_title(ws, r, 2, "DISPOSITION", colspan=5)
-    ws.row_dimensions[r].height = 22
-    r += 1
+    c2 = ws.cell(row=r, column=3, value=rr.get("disposition",""))
+    c2.font = _font(size=9, italic=True, color=STEEL)
+    c2.fill = _fill("FFFBF8F2")
+    ws.merge_cells(f"C{r}:E{r}")
+    r+=1
+    _spacer(ws, r); r+=1
 
-    disp_rows = [
-        ("Rating",       safe(rr["rating"]),       FMT_TEXT, BLACK_CALC),
-        ("Band",         safe(rr["band"]),          FMT_TEXT, BLACK_CALC),
-        ("Disposition",  safe(rr["disposition"]),   FMT_TEXT, GREEN),
-        ("Floor Rule",   safe(comp.get("floorTriggered"), "None applied"), FMT_TEXT, BLACK_CALC),
+    # Factor scores
+    _header_row(ws, r, "FACTOR SCORE DETAIL", 5); r+=1
+    for col_i, h in enumerate(["Factor", "Score", "Weight", "Weighted", "Basis"], 1):
+        c = ws.cell(row=r, column=col_i, value=h)
+        c.font = _font(bold=True, color=WHITE, size=9)
+        c.fill = _fill(NAVY3)
+        c.alignment = _align("center" if col_i > 1 else "left")
+    ws.row_dimensions[r].height = 18; r+=1
+
+    factor_labels = {
+        "F1_GDSCR": "F1 — Pro Forma GDSCR",
+        "F2_Liquidity": "F2 — Liquidity",
+        "F3_NetWorth": "F3 — Net Worth",
+        "F4_IncomeQuality": "F4 — Income Quality",
+        "F5_LTV": "F5 — LTV vs FMV",
+        "F6_Collateral": "F6 — Collateral",
+    }
+
+    for key, label in factor_labels.items():
+        f = fs.get(key, {})
+        score = f.get("score", 0)
+        score_color = GREEN if score <= 2 else AMBER if score <= 4 else RED if score <= 6 else "FFCC0000"
+        bg = "FFFBF8F2"
+
+        ws.cell(row=r, column=1, value=label).font = _font(size=9)
+        ws.cell(row=r, column=1).fill = _fill(LIGHT_BG)
+        c2 = ws.cell(row=r, column=2, value=score)
+        c2.font = _font(bold=True, color=score_color, size=9)
+        c2.fill = _fill(bg)
+        c2.alignment = _align("center")
+        c3 = ws.cell(row=r, column=3, value=f.get("weight",0))
+        c3.number_format = '0%'
+        c3.font = _font(size=9)
+        c3.fill = _fill(bg)
+        c3.alignment = _align("center")
+        c4 = ws.cell(row=r, column=4, value=f.get("weighted",0))
+        c4.number_format = '0.000'
+        c4.font = _font(size=9)
+        c4.fill = _fill(bg)
+        c4.alignment = _align("center")
+        ws.cell(row=r, column=5, value=f.get("basis","")).font = _font(size=8, italic=True, color=STEEL)
+        ws.cell(row=r, column=5).fill = _fill(bg)
+        ws.row_dimensions[r].height = 16; r+=1
+
+    _spacer(ws, r); r+=1
+    _header_row(ws, r, "COMPOSITE SCORE", 5); r+=1
+    _row(ws, r, "Pre-Floor Composite", comp.get("preFloorComposite",0), "x"); r+=1
+    if comp.get("floorTriggered"):
+        _row(ws, r, "Floor Applied", comp.get("floorTriggered",""), "text", val_color=AMBER); r+=1
+    _row(ws, r, "Final Composite Score", comp.get("finalComposite",0), "x", bold=True,
+         val_color=rating_color); r+=1
+    _spacer(ws, r); r+=1
+
+    _header_row(ws, r, "ORR SCALE REFERENCE", 5); r+=1
+    scale = [
+        ("1", "Exceptional", "Approve — best execution"),
+        ("2", "Very Strong", "Approve — full lender universe"),
+        ("3", "Strong", "Approve — standard terms"),
+        ("4", "Good", "Approve with conditions"),
+        ("5", "Acceptable", "Approve with enhanced structure"),
+        ("6- / 6+", "Marginal", "Present with full risk disclosure"),
+        ("7", "Difficult", "Conditional placement — limited universe"),
+        ("8", "Hard Decline", "Do not proceed"),
     ]
-    for i2, (label, val, fmt, vc) in enumerate(disp_rows):
-        lc, vc_cell = apply_kv_row(ws, r, label, val, fmt=fmt, shade=i2%2==1, value_color=vc, label_col=2, value_col=4)
-        ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=3)
-        ws.merge_cells(start_row=r, start_column=4, end_row=r, end_column=6)
-        ws.row_dimensions[r].height = 18
-        r += 1
-
-    r += 1
-
-    # Repayment sources
-    apply_section_title(ws, r, 2, "REPAYMENT SOURCES", colspan=5)
-    ws.row_dimensions[r].height = 22
-    r += 1
-
-    rep = a.get("repaymentSources", {})
-    rep_rows = [
-        ("Primary Source",            safe(rep.get("primary")),            FMT_TEXT, BLACK_CALC),
-        ("Primary Basis",             safe(rep.get("primaryBasis")),       FMT_TEXT, BLACK_CALC),
-        ("Secondary Source",          safe(rep.get("secondary")),          FMT_TEXT, BLACK_CALC),
-        ("Secondary Assessment",      safe(rep.get("secondaryAssessment")),FMT_TEXT, BLACK_CALC),
-        ("Dual-Source Confidence",    safe(rep.get("dualSourceConfidence")),FMT_TEXT,
-            GREEN if rep.get("dualSourceConfidence") == "Strong" else AMBER if rep.get("dualSourceConfidence") == "Adequate" else RED),
-    ]
-    for i2, (label, val, fmt, vc) in enumerate(rep_rows):
-        lc, vc_cell = apply_kv_row(ws, r, label, val, fmt=fmt, shade=i2%2==1, value_color=vc, label_col=2, value_col=4)
-        ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=3)
-        ws.merge_cells(start_row=r, start_column=4, end_row=r, end_column=6)
-        vc_cell.alignment = _align("left", wrap=True)
-        ws.row_dimensions[r].height = 18
-        r += 1
-
-    ws.freeze_panes = "B2"
+    for orr, band_s, action in scale:
+        is_current = str(rr.get("rating","")) in orr
+        bg = NAVY3 if is_current else LIGHT_BG
+        fg = GOLD if is_current else STEEL
+        for col_i, val in enumerate([orr, band_s, action], 1):
+            c = ws.cell(row=r, column=col_i, value=val)
+            c.font = _font(bold=is_current, color=fg, size=9)
+            c.fill = _fill(bg)
+        ws.row_dimensions[r].height = 15; r+=1
 
 
-# ── Tab 6: Lenders ────────────────────────────────────────────────────────────
-
-def build_lenders(wb, a):
-    ws = wb.create_sheet("Lenders")
+# ── TAB 9: Trend Analysis ─────────────────────────────────────────────────────
+def _tab_trend(wb, a):
+    ws = wb.create_sheet("Trend Analysis")
     ws.sheet_view.showGridLines = False
+    ws.sheet_properties.tabColor = "4A6480"
+    _setup_cols(ws, [36, 18, 18, 18, 18])
 
-    rr = a["riskRating"]
-    lenders = a.get("lenderRouting", [])
-    eligible   = [l for l in lenders if l.get("status") == "ELIGIBLE"]
-    eliminated = [l for l in lenders if l.get("status") != "ELIGIBLE"]
-
-    for i, w in enumerate([2, 28, 20, 36, 2], 1):
-        set_col_width(ws, i, w)
+    inc = a.get("incomeNormalization", {})
+    bs  = a.get("balanceSheet", {})
+    tx  = a.get("transaction", {})
+    years = inc.get("taxYears", [2023, 2024])
+    y1 = years[0] if len(years) > 0 else "Year 1"
+    y2 = years[1] if len(years) > 1 else "Year 2"
+    gov_yr = inc.get("qualifyingYear") or inc.get("governingYear") or y1
 
     r = 1
-    ws.merge_cells(f"B{r}:D{r}")
-    c = ws.cell(row=r, column=2, value=f"LENDER ROUTING — Rating {rr['rating']} ({rr['band']})")
-    c.font = _font(bold=True, color=GOLD_LIGHT, size=13)
-    c.fill = _fill(NAVY_BASE)
-    c.alignment = _align("left", "center")
-    ws.row_dimensions[r].height = 28
-    r += 2
+    c = ws.cell(row=r, column=1, value="TREND ANALYSIS")
+    c.font = _font(bold=True, color=GOLD, size=12)
+    c.fill = _fill(NAVY)
+    ws.merge_cells(f"A{r}:E{r}")
+    ws.row_dimensions[r].height = 26; r+=1
+    _spacer(ws, r); r+=1
 
-    # Eligible
-    apply_section_title(ws, r, 2, f"ELIGIBLE LENDERS ({len(eligible)})", colspan=3)
-    ws.row_dimensions[r].height = 22
-    r += 1
-    apply_header_row(ws, r, ["", "Institution", "Tier", "Notes"])
-    ws.row_dimensions[r].height = 18
-    r += 1
+    _header_row(ws, r, "INCOME TREND", 5); r+=1
+    for col_i, h in enumerate(["Metric", str(y1), str(y2), "Change", "Direction"], 1):
+        c = ws.cell(row=r, column=col_i, value=h)
+        c.font = _font(bold=True, color=WHITE, size=9)
+        c.fill = _fill(NAVY3)
+        c.alignment = _align("center" if col_i > 1 else "left")
+    ws.row_dimensions[r].height = 18; r+=1
 
-    for i, l in enumerate(eligible):
-        shade = i % 2 == 1
-        bg = "FFE8EFF5" if shade else "FFFFFFFF"
-        for ci, (val, col) in enumerate([
-            ("",                  BLACK_CALC),
-            (l.get("name",""),    BLACK_CALC),
-            (l.get("tier",""),    "FF6B7280"),
-            (l.get("notes",""),   "FF6B7280"),
-        ], 1):
-            c = ws.cell(row=r, column=ci, value=val)
-            c.font = _font(color=col, size=10, bold=(ci==2))
-            c.fill = _fill(bg)
-            c.alignment = _align("left")
-            c.border = _border("FFD1D5DB")
-        # Eligible marker
-        ec = ws.cell(row=r, column=2)
-        ec.font = _font(color=GREEN, size=10, bold=True)
-        ws.row_dimensions[r].height = 17
-        r += 1
+    y1_inc = inc.get("year1Total", 0)
+    y2_inc = inc.get("year2Total", 0)
+    change = y2_inc - y1_inc
+    pct    = change/y1_inc if y1_inc else 0
+    direction = "▲ Improving" if change > 0 else "▼ Declining" if change < 0 else "— Flat"
+    dir_color = GREEN if change > 0 else RED if change < 0 else STEEL
 
-    r += 1
+    def _trend_row(label, v1, v2, fmt="dollar"):
+        nonlocal r
+        chg = v2 - v1
+        pct_chg = chg/v1 if v1 else 0
+        dir_s = "▲" if chg > 0 else "▼" if chg < 0 else "—"
+        d_color = GREEN if chg > 0 else RED if chg < 0 else STEEL
 
-    # Eliminated
-    apply_section_title(ws, r, 2, f"ELIMINATED LENDERS ({len(eliminated)})", colspan=3)
-    ws.row_dimensions[r].height = 22
-    r += 1
-    apply_header_row(ws, r, ["", "Institution", "Tier", "Reason Eliminated"])
-    ws.row_dimensions[r].height = 18
-    r += 1
+        ws.cell(row=r, column=1, value=label).font = _font(size=9)
+        ws.cell(row=r, column=1).fill = _fill(LIGHT_BG)
+        _value(ws, r, 2, v1, fmt)
+        _value(ws, r, 3, v2, fmt)
+        _value(ws, r, 4, chg, fmt)
+        c5 = ws.cell(row=r, column=5, value=f"{dir_s} {abs(pct_chg)*100:.1f}%")
+        c5.font = _font(size=9, color=d_color, bold=True)
+        c5.fill = _fill("FFFBF8F2")
+        c5.alignment = _align("center")
+        ws.row_dimensions[r].height = 16; r+=1
 
-    for i, l in enumerate(eliminated):
-        shade = i % 2 == 1
-        bg = "FFE8EFF5" if shade else "FFFFFFFF"
-        for ci, (val, col) in enumerate([
-            ("",                  BLACK_CALC),
-            (l.get("name",""),    "FF9CA3AF"),
-            (l.get("tier",""),    "FF9CA3AF"),
-            (l.get("status",""),  "FF9CA3AF"),
-        ], 1):
-            c = ws.cell(row=r, column=ci, value=val)
-            c.font = _font(color=col, size=10)
-            c.fill = _fill(bg)
-            c.alignment = _align("left")
-            c.border = _border("FFD1D5DB")
-        ws.row_dimensions[r].height = 17
-        r += 1
+    _trend_row("Total Qualifying Income", y1_inc, y2_inc)
 
-    ws.freeze_panes = "B2"
+    for k1 in inc.get("k1Detail", []):
+        if not k1.get("excluded"):
+            _trend_row(f"  K-1: {k1.get('entityName','')[:25]}",
+                       k1.get("year1Box1",0) or 0,
+                       k1.get("year2Box1",0) or 0)
 
+    _spacer(ws, r); r+=1
+    _header_row(ws, r, "INCOME VARIANCE ASSESSMENT", 5); r+=1
+    var = inc.get("variancePct", 0)
+    var_label = "Within tolerance (≤15%)" if abs(var) <= 15 else "Elevated variance (15–25%)" if abs(var) <= 25 else "Material variance (>25%) — flag"
+    var_color = GREEN if abs(var) <= 15 else AMBER if abs(var) <= 25 else RED
+    _row(ws, r, "Year-over-Year Variance", var/100 if var else 0, "pct", val_color=var_color); r+=1
 
-# ── Tab 7: Flags ──────────────────────────────────────────────────────────────
+    c = ws.cell(row=r, column=1, value=f"  Assessment: {var_label}")
+    c.font = _font(italic=True, color=var_color, size=9)
+    c.fill = _fill(LIGHT_BG)
+    ws.merge_cells(f"A{r}:E{r}")
+    ws.row_dimensions[r].height = 16; r+=1
+    _spacer(ws, r); r+=1
 
-def build_flags(wb, a):
-    ws = wb.create_sheet("Flags")
-    ws.sheet_view.showGridLines = False
+    _header_row(ws, r, "KEY RATIO BENCHMARKS", 5); r+=1
+    gdscr = a.get("gdscr",{}).get("gdscr",0)
+    nw_cov = bs.get("netWorthCoverage",0)
+    liq_rat = bs.get("liquidityRatio",0)
 
-    flags = a.get("flags", [])
-
-    for i, w in enumerate([2, 16, 36, 36, 2], 1):
-        set_col_width(ws, i, w)
-
-    r = 1
-    ws.merge_cells(f"B{r}:D{r}")
-    c = ws.cell(row=r, column=2, value=f"FLAGS & MITIGANTS ({len(flags)} identified)")
-    c.font = _font(bold=True, color=GOLD_LIGHT, size=13)
-    c.fill = _fill(NAVY_BASE)
-    c.alignment = _align("left", "center")
-    ws.row_dimensions[r].height = 28
-    r += 2
-
-    if not flags:
-        ws.merge_cells(f"B{r}:D{r}")
-        c = ws.cell(row=r, column=2, value="No material flags identified. Credit package presents cleanly.")
-        c.font = _font(color=GREEN, size=10)
-        c.alignment = _align("left")
-        return
-
-    apply_header_row(ws, r, ["", "Severity / Code", "Detail", "Mitigant & Action"])
-    ws.row_dimensions[r].height = 18
-    r += 1
-
-    for i, flag in enumerate(flags):
-        severity = flag.get("severity", "")
-        code     = flag.get("code", "")
-        title    = flag.get("title", "")
-        detail   = flag.get("detail", "")
-        mitigant = flag.get("mitigant", "")
-        action   = flag.get("action", "")
-
-        sev_color = RED if severity == "CRITICAL" else AMBER
-        bg_color  = "FFFDF0EF" if severity == "CRITICAL" else "FFFEFAF0"
-
-        # Title row
-        ws.merge_cells(f"B{r}:D{r}")
-        c = ws.cell(row=r, column=2, value=f"[{severity}] {code} — {title}")
-        c.font = _font(bold=True, color=sev_color, size=10)
-        c.fill = _fill(bg_color)
-        c.alignment = _align("left", wrap=True)
-        c.border = Border(
-            left=Side(style="medium", color=sev_color),
-            top=Side(style="thin", color="FFD1D5DB"),
-        )
-        ws.row_dimensions[r].height = 20
-        r += 1
-
-        # Detail / Mitigant / Action rows
-        for field_label, field_val in [("Detail:", detail), ("Mitigant:", mitigant), ("Required Action:", action)]:
-            c_label = ws.cell(row=r, column=2, value=field_label)
-            c_label.font = _font(bold=True, color="FF374151", size=9)
-            c_label.fill = _fill(bg_color)
-            c_label.alignment = _align("left")
-            c_label.border = Border(left=Side(style="medium", color=sev_color))
-
-            ws.merge_cells(start_row=r, start_column=3, end_row=r, end_column=4)
-            c_val = ws.cell(row=r, column=3, value=field_val)
-            c_val.font = _font(color="FF374151", size=9)
-            c_val.fill = _fill(bg_color)
-            c_val.alignment = _align("left", wrap=True)
-            ws.row_dimensions[r].height = 32
-            r += 1
-
-        spacer_row(ws, r, ncols=5)
-        ws.row_dimensions[r].height = 8
-        r += 1
-
-    ws.freeze_panes = "B2"
-
-
-# ── Master assembler ──────────────────────────────────────────────────────────
-
-
-# ── Tab 8: Amortization Schedule ──────────────────────────────────────────────
-
-def build_amortization(wb, a):
-    ws = wb.create_sheet("Amortization")
-    ws.sheet_view.showGridLines = False
-
-    tx = a["transaction"]
-    principal   = tx["loanAmount"]
-    annual_rate = tx["illustrativeRate"]
-    term        = tx["termMonths"]
-    monthly_pmt = tx["monthlyPayment"]
-    monthly_r   = annual_rate / 12
-
-    for i, w in enumerate([2, 10, 16, 16, 16, 16, 18, 2], 1):
-        set_col_width(ws, i, w)
-
-    r = 1
-    ws.merge_cells(f"B{r}:G{r}")
-    c = ws.cell(row=r, column=2, value="LOAN AMORTIZATION SCHEDULE")
-    c.font = _font(bold=True, color=GOLD_LIGHT, size=13)
-    c.fill = _fill(NAVY_BASE)
-    c.alignment = _align("left", "center")
-    ws.row_dimensions[r].height = 28
-    r += 2
-
-    # Parameters summary
-    apply_section_title(ws, r, 2, "LOAN PARAMETERS", colspan=6)
-    ws.row_dimensions[r].height = 22
-    r += 1
-
-    params = [
-        ("Loan Amount",        principal,    FMT_CURRENCY, BLUE_INPUT),
-        ("Annual Rate",        annual_rate,  FMT_PCT,      BLUE_INPUT),
-        ("Term (months)",      term,         FMT_NUMBER,   BLUE_INPUT),
-        ("Monthly Payment",    monthly_pmt,  FMT_CURRENCY, BLACK_CALC),
-        ("Annual Payment",     monthly_pmt * 12, FMT_CURRENCY, BLACK_CALC),
-        ("Total Interest",     monthly_pmt * term - principal, FMT_CURRENCY, BLACK_CALC),
-        ("Total Cost of Loan", monthly_pmt * term, FMT_CURRENCY, BLACK_CALC),
+    ratios = [
+        ("Pro Forma GDSCR", gdscr, 1.75, 1.25, "x"),
+        ("Net Worth Coverage", nw_cov, 3.0, 1.5, "x"),
+        ("Liquidity Ratio", liq_rat, 2.0, 1.0, "x"),
     ]
-    for i2, (label, val, fmt, vc) in enumerate(params):
-        lc, vc_cell = apply_kv_row(ws, r, label, val, fmt=fmt, shade=i2%2==1,
-                                    value_color=vc, label_col=2, value_col=4)
-        ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=3)
-        ws.row_dimensions[r].height = 18
-        r += 1
-
-    r += 1
-
-    # Schedule header
-    apply_section_title(ws, r, 2, "MONTHLY SCHEDULE", colspan=6)
-    ws.row_dimensions[r].height = 22
-    r += 1
-
-    apply_header_row(ws, r, ["", "Month", "Payment", "Principal", "Interest", "Balance", "Cumul. Interest"])
-    ws.row_dimensions[r].height = 18
-    r += 1
-
-    # Build schedule row by row
-    balance = principal
-    cumul_interest = 0
-
-    for month in range(1, term + 1):
-        interest_pmt  = balance * monthly_r
-        principal_pmt = monthly_pmt - interest_pmt
-        balance      -= principal_pmt
-        cumul_interest += interest_pmt
-
-        # Clamp final month rounding
-        if month == term:
-            principal_pmt += balance
-            balance = 0
-
-        shade = month % 2 == 0
-
-        # Highlight annual summary rows
-        is_annual = month % 12 == 0
-        bg = NAVY_MID if is_annual else ("FFE8EFF5" if shade else "FFFFFFFF")
-        fc = GOLD_LIGHT if is_annual else BLACK_CALC
-
-        for ci, (val, fmt) in enumerate([
-            ("",              None),
-            (month,           FMT_NUMBER),
-            (monthly_pmt,     FMT_CURRENCY),
-            (principal_pmt,   FMT_CURRENCY),
-            (interest_pmt,    FMT_CURRENCY),
-            (max(balance, 0), FMT_CURRENCY),
-            (cumul_interest,  FMT_CURRENCY),
-        ], 1):
-            c = ws.cell(row=r, column=ci, value=round(val, 2) if isinstance(val, float) else val)
-            c.font = _font(color=fc, size=9, bold=is_annual)
-            c.fill = _fill(bg)
-            c.alignment = _align("center" if ci == 2 else "right")
-            c.border = _border("FFD1D5DB")
-            if fmt: c.number_format = fmt
-        ws.row_dimensions[r].height = 14
-        r += 1
-
-    # Final totals
-    total_row(ws, r, [
-        "", "TOTALS",
-        round(monthly_pmt * term, 2),
-        round(principal, 2),
-        round(monthly_pmt * term - principal, 2),
-        0,
-        round(monthly_pmt * term - principal, 2),
-    ], fmts=[None, None, FMT_CURRENCY, FMT_CURRENCY, FMT_CURRENCY, FMT_CURRENCY, FMT_CURRENCY])
-    ws.row_dimensions[r].height = 20
-
-    ws.freeze_panes = "B9"
+    for label, val, strong_thresh, ok_thresh, fmt in ratios:
+        color = GREEN if val >= strong_thresh else AMBER if val >= ok_thresh else RED
+        benchmark = f"Strong ≥{strong_thresh}{fmt}  |  Adequate ≥{ok_thresh}{fmt}  |  Weak below"
+        ws.cell(row=r, column=1, value=label).font = _font(bold=True, size=9)
+        ws.cell(row=r, column=1).fill = _fill(LIGHT_BG)
+        c2 = ws.cell(row=r, column=2, value=val)
+        c2.font = _font(bold=True, color=color, size=11)
+        c2.fill = _fill("FFFBF8F2")
+        c2.alignment = _align("center")
+        c2.number_format = f'0.00"{fmt}"'
+        c3 = ws.cell(row=r, column=3, value=benchmark)
+        c3.font = _font(size=8, italic=True, color=STEEL)
+        c3.fill = _fill("FFFBF8F2")
+        ws.merge_cells(f"C{r}:E{r}")
+        ws.row_dimensions[r].height = 18; r+=1
 
 
-# ── Tab 9: Sensitivity Analysis ───────────────────────────────────────────────
-
-def build_sensitivity(wb, a):
-    ws = wb.create_sheet("Sensitivity")
-    ws.sheet_view.showGridLines = False
-
-    tx  = a["transaction"]
-    inc = a["incomeNormalization"]
-    g   = a["gdscr"]
-
-    after_tax_income = inc.get("afterTaxQualifyingIncome") or g.get("afterTaxIncome", 0)
-    base_loan        = tx["loanAmount"]
-    base_rate        = tx["illustrativeRate"]
-    term             = tx["termMonths"]
-    existing_ds      = tx["existingAnnualDS"]
-    purchase_price   = tx["purchasePrice"]
-
-    for i, w in enumerate([2, 22, 14, 14, 14, 14, 14, 14, 2], 1):
-        set_col_width(ws, i, w)
-
-    r = 1
-    ws.merge_cells(f"B{r}:H{r}")
-    c = ws.cell(row=r, column=2, value="SENSITIVITY ANALYSIS")
-    c.font = _font(bold=True, color=GOLD_LIGHT, size=13)
-    c.fill = _fill(NAVY_BASE)
-    c.alignment = _align("left", "center")
-    ws.row_dimensions[r].height = 28
-    r += 2
-
-    # Base case summary
-    apply_section_title(ws, r, 2, "BASE CASE", colspan=7)
-    ws.row_dimensions[r].height = 22
-    r += 1
-
-    def monthly_payment(p, annual_r, n):
-        if annual_r == 0: return p / n
-        mr = annual_r / 12
-        return p * (mr * (1 + mr)**n) / ((1 + mr)**n - 1)
-
-    def gdscr_calc(loan, rate):
-        pmt   = monthly_payment(loan, rate, term)
-        ann_ds = pmt * 12 + existing_ds
-        return after_tax_income / ann_ds if ann_ds > 0 else 0
-
-    base_pmt   = monthly_payment(base_loan, base_rate, term)
-    base_ann   = base_pmt * 12 + existing_ds
-    base_gdscr = after_tax_income / base_ann if base_ann > 0 else 0
-    base_ltv   = base_loan / purchase_price
-
-    base_rows = [
-        ("After-Tax Qualifying Income",  after_tax_income, FMT_CURRENCY, GREEN_LINK),
-        ("Loan Amount",                  base_loan,        FMT_CURRENCY, BLUE_INPUT),
-        ("LTV",                          base_ltv,         FMT_PCT,      BLACK_CALC),
-        ("Illustrative Rate",            base_rate,        FMT_PCT,      BLUE_INPUT),
-        ("Term (months)",                term,             FMT_NUMBER,   BLUE_INPUT),
-        ("Monthly Payment",              base_pmt,         FMT_CURRENCY, BLACK_CALC),
-        ("Existing Annual DS",           existing_ds,      FMT_CURRENCY, GREEN_LINK),
-        ("Total Pro Forma DS",           base_ann,         FMT_CURRENCY, BLACK_CALC),
-        ("Base GDSCR",                   base_gdscr,       FMT_MULTIPLE, BLACK_CALC),
-    ]
-    for i2, (label, val, fmt, vc) in enumerate(base_rows):
-        lc, vc_cell = apply_kv_row(ws, r, label, round(val,4) if isinstance(val,float) else val,
-                                    fmt=fmt, shade=i2%2==1, value_color=vc, label_col=2, value_col=4)
-        ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=3)
-        ws.row_dimensions[r].height = 18
-        r += 1
-
-    r += 1
-
-    # ── GDSCR sensitivity: Rate vs Loan Amount ────────────────────────────────
-    apply_section_title(ws, r, 2, "GDSCR SENSITIVITY — RATE vs LOAN AMOUNT", colspan=7)
-    ws.row_dimensions[r].height = 22
-    r += 1
-
-    rates     = [base_rate - 0.01, base_rate - 0.005, base_rate, base_rate + 0.005, base_rate + 0.01, base_rate + 0.015]
-    loan_pcts = [0.65, 0.70, 0.75, 0.80, 0.85, 0.90]
-    loans     = [round(purchase_price * p / 50000) * 50000 for p in loan_pcts]
-
-    def fmt_currency(v):
-        return f"${v/1000000:.2f}M" if v >= 1000000 else f"${v:,.0f}"
-
-    header_vals = ["", "Rate \\ Loan →"] + [fmt_currency(l) for l in loans]
-    apply_header_row(ws, r, header_vals)
-    ws.cell(row=r, column=3).value = "Rate \\ Loan →"
-    ws.row_dimensions[r].height = 18
-    r += 1
-
-    # LTV sub-header
-    ltv_vals = ["", "LTV →"] + [f"{l/purchase_price*100:.0f}%" for l in loans]
-    for ci, val in enumerate(ltv_vals, 1):
-        c = ws.cell(row=r, column=ci, value=val)
-        c.font = _font(color=STEEL, size=9, italic=True)
-        c.fill = _fill(NAVY_MID)
-        c.alignment = _align("center" if ci > 2 else "left")
-    ws.row_dimensions[r].height = 14
-    r += 1
-
-    for ri, rate in enumerate(rates):
-        is_base_rate = abs(rate - base_rate) < 0.0001
-        for ci, loan in enumerate(loans, 1):
-            gdscr_val  = gdscr_calc(loan, rate)
-            is_base    = is_base_rate and abs(loan - base_loan) < 1000
-            is_viable  = gdscr_val >= 1.25
-
-            bg = NAVY_MID if is_base else ("FFE8F5E9" if gdscr_val >= 1.50 else
-                                            "FFFFF8E1" if gdscr_val >= 1.25 else
-                                            "FFFDF0EF")
-            fc = GREEN if gdscr_val >= 1.50 else AMBER if gdscr_val >= 1.25 else RED
-            if is_base: fc = GOLD_LIGHT
-
-            # Rate label (first col of each row)
-            if ci == 1:
-                lc = ws.cell(row=r, column=2, value=f"{rate*100:.2f}%" + (" ◄ base" if is_base_rate else ""))
-                lc.font = _font(color=GOLD_LIGHT if is_base_rate else "FF374151", size=9,
-                                bold=is_base_rate)
-                lc.fill = _fill(NAVY_MID if is_base_rate else ("FFE8EFF5" if ri%2==1 else "FFFFFFFF"))
-                lc.alignment = _align("left")
-                lc.border = _border("FFD1D5DB")
-
-            c = ws.cell(row=r, column=ci + 2, value=round(gdscr_val, 2))
-            c.font = _font(color=fc, size=10, bold=is_base)
-            c.fill = _fill(bg)
-            c.alignment = _align("center")
-            c.border = _border("FFD1D5DB")
-            c.number_format = FMT_MULTIPLE
-
-        ws.row_dimensions[r].height = 18
-        r += 1
-
-    r += 1
-
-    # ── GDSCR sensitivity: Income stress ──────────────────────────────────────
-    apply_section_title(ws, r, 2, "INCOME STRESS TEST — GDSCR AT REDUCED INCOME LEVELS", colspan=7)
-    ws.row_dimensions[r].height = 22
-    r += 1
-
-    apply_header_row(ws, r, ["", "Income Scenario", "Gross Income", "After-Tax Est.", "Total DS", "GDSCR", "Assessment"])
-    ws.row_dimensions[r].height = 18
-    r += 1
-
-    gross_income   = inc.get("qualifyingIncome", after_tax_income)
-    taxes_paid     = inc.get("taxesPaidLowerYear", 0)
-    eff_tax_rate   = taxes_paid / gross_income if gross_income > 0 else 0.36
-    base_total_ds  = tx["totalProFormaDS"]
-
-    stress_scenarios = [
-        ("Base Case (Qualifying Year)",   1.00),
-        ("5% Income Reduction",           0.95),
-        ("10% Income Reduction",          0.90),
-        ("15% Income Reduction",          0.85),
-        ("20% Income Reduction",          0.80),
-        ("25% Income Reduction",          0.75),
-        ("30% Income Reduction — Stress", 0.70),
-    ]
-
-    for i2, (label, pct) in enumerate(stress_scenarios):
-        stressed_gross    = gross_income * pct
-        stressed_after_tax = stressed_gross * (1 - eff_tax_rate)
-        stressed_gdscr    = stressed_after_tax / base_total_ds if base_total_ds > 0 else 0
-        assessment = ("Strong" if stressed_gdscr >= 1.75 else
-                      "Adequate" if stressed_gdscr >= 1.25 else
-                      "Marginal" if stressed_gdscr >= 1.0 else
-                      "Below threshold")
-        is_base = i2 == 0
-        shade   = i2 % 2 == 1
-        gdscr_color = GREEN if stressed_gdscr >= 1.5 else AMBER if stressed_gdscr >= 1.0 else RED
-        if is_base: gdscr_color = GOLD_LIGHT
-
-        data_row(ws, r,
-            ["", label, stressed_gross, stressed_after_tax, base_total_ds, stressed_gdscr, assessment],
-            fmts=[None, None, FMT_CURRENCY, FMT_CURRENCY, FMT_CURRENCY, FMT_MULTIPLE, None],
-            shade=shade,
-            colors=["", BLACK_CALC, BLUE_INPUT if is_base else BLACK_CALC,
-                    BLACK_CALC, GREEN_LINK, gdscr_color, gdscr_color]
-        )
-        ws.row_dimensions[r].height = 18
-        r += 1
-
-    r += 1
-
-    # Legend
-    apply_section_title(ws, r, 2, "COLOR LEGEND", colspan=7)
-    ws.row_dimensions[r].height = 22
-    r += 1
-
-    legend = [
-        ("Green",  "GDSCR ≥ 1.50x — Adequate to Strong",   "FFE8F5E9", GREEN),
-        ("Amber",  "GDSCR 1.25x–1.49x — Marginal",          "FFFFF8E1", AMBER),
-        ("Red",    "GDSCR < 1.25x — Below threshold",        "FFFDF0EF", RED),
-        ("Gold",   "Base case",                              NAVY_MID,   GOLD_LIGHT),
-    ]
-    for color_name, desc, bg, fc in legend:
-        c_label = ws.cell(row=r, column=2, value=color_name)
-        c_label.font = _font(color=fc, size=10, bold=True)
-        c_label.fill = _fill(bg)
-        c_label.border = _border("FFD1D5DB")
-        ws.merge_cells(start_row=r, start_column=3, end_row=r, end_column=7)
-        c_desc = ws.cell(row=r, column=3, value=desc)
-        c_desc.font = _font(color=fc, size=10)
-        c_desc.fill = _fill(bg)
-        c_desc.border = _border("FFD1D5DB")
-        ws.row_dimensions[r].height = 17
-        r += 1
-
-    ws.freeze_panes = "B9"
-
-def generate_workbook(analysis, output_path):
+# ── MAIN ENTRY POINT ──────────────────────────────────────────────────────────
+def generate_workbook(analysis: dict, output_path: str):
     wb = Workbook()
 
-    build_cover(wb, analysis)
-    build_income(wb, analysis)
-    build_balance_sheet(wb, analysis)
-    build_gdscr(wb, analysis)
-    build_scorecard(wb, analysis)
-    build_lenders(wb, analysis)
-    build_flags(wb, analysis)
-    build_amortization(wb, analysis)
-    build_sensitivity(wb, analysis)
-
-    # Tab colors
-    tab_colors = {
-        "Cover":          "C8A96E",
-        "Income":         "0B1E3A",
-        "Balance Sheet":  "0B1E3A",
-        "GDSCR":          "0B1E3A",
-        "Scorecard":      "0B1E3A",
-        "Lenders":        "0B1E3A",
-        "Flags":          "C0392B",
-        "Amortization":   "0B1E3A",
-        "Sensitivity":    "0B1E3A",
-    }
-    for sheet_name, color in tab_colors.items():
-        if sheet_name in wb.sheetnames:
-            wb[sheet_name].sheet_properties.tabColor = color
+    _tab_dashboard(wb, analysis)
+    _tab_income(wb, analysis)
+    _tab_k1(wb, analysis)
+    _tab_debt_service(wb, analysis)
+    _tab_balance_sheet(wb, analysis)
+    _tab_nw_leverage(wb, analysis)
+    _tab_collateral(wb, analysis)
+    _tab_risk_rating(wb, analysis)
+    _tab_trend(wb, analysis)
 
     wb.save(output_path)
-    size_kb = round(__import__("os").path.getsize(output_path) / 1024, 1)
-    print(f"Workbook written: {output_path}  ({size_kb} KB, {len(wb.sheetnames)} tabs)")
     return output_path
-
-
-# ── CLI ───────────────────────────────────────────────────────────────────────
-
-if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        print("Usage: python generate_workbook.py <analysis.json> <output.xlsx>")
-        sys.exit(1)
-    with open(sys.argv[1]) as f:
-        data = json.load(f)
-    generate_workbook(data, sys.argv[2])
