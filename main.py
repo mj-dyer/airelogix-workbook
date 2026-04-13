@@ -42,6 +42,13 @@ class DealSubmission(BaseModel):
 class StatusUpdate(BaseModel):
     status: str
 
+
+class Section11Request(BaseModel):
+    raw_response: str          # Full spreading prompt response text
+    deal_id: Optional[str] = None  # If provided, updates existing deal
+    borrower_name: Optional[str] = None
+
+
 class IOISubmission(BaseModel):
     institution: str
     officerName: str
@@ -315,6 +322,368 @@ Rules:
 - existingAnnualDebtService = sum of all recurring debt payments visible in statements (mortgages, loans, LOCs) annualized
 - netWorth = totalAssets - totalLiabilities
 - Use 0 for any field not found in the documents"""
+
+
+
+# ── Section 11 JSON Integration ───────────────────────────────────────────────
+
+def _extract_section11_json(raw_text: str) -> Optional[dict]:
+    """
+    Extract and parse the Section 11 JSON block from spreading prompt output.
+    The block is the last ```json ... ``` fenced code block in the response.
+    """
+    import json as _json, re as _re
+
+    # Find all ```json blocks and take the last one
+    pattern = r"```json\s*([\s\S]*?)```"
+    matches = _re.findall(pattern, raw_text)
+    if not matches:
+        # Try without json tag
+        pattern2 = r"```\s*(\{[\s\S]*?\})\s*```"
+        matches = _re.findall(pattern2, raw_text)
+    if not matches:
+        return None
+
+    json_str = matches[-1].strip()
+    try:
+        return _json.loads(json_str)
+    except _json.JSONDecodeError as e:
+        print(f"[Section11] JSON parse error: {e}")
+        # Try cleaning common issues
+        json_str = _re.sub(r",\s*}", "}", json_str)
+        json_str = _re.sub(r",\s*]", "]", json_str)
+        try:
+            return _json.loads(json_str)
+        except:
+            return None
+
+
+def _map_section11_to_analysis(s11: dict) -> dict:
+    """
+    Map Section 11 JSON (v1.8 schema) to the analysis format
+    expected by the lender portal and workbook generator.
+    Handles both individual and corporate deal types.
+    """
+    deal_type = s11.get("meta", {}).get("deal_type", "individual")
+    dp = s11.get("dealParameters", {})
+    col = s11.get("collateral", {})
+    rr = s11.get("riskRating", {})
+    flags = s11.get("flags", [])
+    lr = s11.get("lenderRouting", [])
+    rs = s11.get("repayment_sources", {})
+    ind = s11.get("individual") or {}
+    corp = s11.get("corporate") or {}
+
+    # Build analysis dict in engine-compatible format
+    analysis = {
+        "analysisDate": s11.get("meta", {}).get("analysis_date", ""),
+        "applicationId": s11.get("meta", {}).get("deal_id", ""),
+        "borrowerName": dp.get("borrower_name", s11.get("meta", {}).get("borrower_last_name", "")),
+        "dealType": deal_type,
+
+        "aircraft": {
+            "description": f"{dp.get('aircraft_year','')} {dp.get('aircraft_make','')} {dp.get('aircraft_model','')}".strip(),
+            "serialNumber": dp.get("aircraft_sn", col.get("sn", "")),
+            "registration": dp.get("aircraft_registration", col.get("registration", "")),
+            "aftt": col.get("aftt", 0),
+            "engineProgram": col.get("engine_program", ""),
+            "year": dp.get("aircraft_year", col.get("year", 0)),
+            "make": dp.get("aircraft_make", col.get("make", "")),
+            "model": dp.get("aircraft_model", col.get("model", "")),
+        },
+
+        "collateral": {
+            "year": col.get("year", dp.get("aircraft_year", 0)),
+            "make": col.get("make", dp.get("aircraft_make", "")),
+            "model": col.get("model", dp.get("aircraft_model", "")),
+            "sn": col.get("sn", dp.get("aircraft_sn", "")),
+            "registration": col.get("registration", dp.get("aircraft_registration", "")),
+            "aftt": col.get("aftt", 0),
+            "engine_program": col.get("engine_program", ""),
+            "fmv_curve": col.get("fmv_curve", col.get("fmv_used", 0)),
+            "fmv_purchase_price": col.get("fmv_purchase_price", dp.get("purchase_price", 0)),
+            "fmv_used": col.get("fmv_used", col.get("fmv_curve", 0)),
+            "estimatedFMV": col.get("fmv_curve", col.get("fmv_used", 0)),
+            "ltv_on_curve_fmv": round(col.get("ltv_on_curve_fmv", 0) * 100, 1) if col.get("ltv_on_curve_fmv", 0) < 1 else col.get("ltv_on_curve_fmv", 0),
+            "ltv_on_purchase_price": round(dp.get("ltv", 0) * 100, 1) if dp.get("ltv", 0) < 1 else dp.get("ltv", 0),
+            "curveName": col.get("curve_name", "AireLogix Curve"),
+        },
+
+        "transaction": {
+            "purchasePrice": dp.get("purchase_price", 0),
+            "loanAmount": dp.get("loan_amount", 0),
+            "ltv": dp.get("ltv", 0),
+            "ltvVsFMV": col.get("ltv_on_curve_fmv", 0),
+            "fmv": col.get("fmv_curve", col.get("fmv_used", 0)),
+            "illustrativeRate": dp.get("rate", 0),
+            "rateNote": f"SOFR OIS + spread. 30/360 basis. Not a lender commitment.",
+            "termMonths": dp.get("term_months", 120),
+            "monthlyPayment": dp.get("monthly_payment", 0),
+            "annualAircraftDS": dp.get("annual_debt_service_aircraft", (dp.get("monthly_payment", 0) * 12)),
+            "existingAnnualDS": (
+                ind.get("existingAnnualDebtService", 0) or
+                corp.get("debtStack", {}).get("existingAnnualDS", 0)
+            ),
+            "totalProFormaDS": (
+                dp.get("annual_debt_service_aircraft", dp.get("monthly_payment", 0) * 12) +
+                (ind.get("existingAnnualDebtService", 0) or
+                 corp.get("debtStack", {}).get("existingAnnualDS", 0))
+            ),
+        },
+
+        "riskRating": {
+            "rating": rr.get("final_rating", ""),
+            "band": _orr_to_band(rr.get("final_rating", "")),
+            "disposition": rr.get("disposition", ""),
+            "composite": {"finalComposite": rr.get("weighted_composite", 0)},
+            "factorScores": {
+                f.get("code", f"F{i+1}"): {
+                    "score": f.get("score", 0),
+                    "weight": f.get("weight", 0),
+                    "weighted": f.get("weighted", 0),
+                    "basis": f.get("label", "")
+                }
+                for i, f in enumerate(rr.get("factors", []))
+            }
+        },
+
+        "flags": [
+            {
+                "severity": f.get("severity", ""),
+                "title": f.get("title", ""),
+                "detail": f.get("risk", ""),
+                "mitigant": f.get("mitigant", ""),
+                "action": f.get("net_assessment", ""),
+            }
+            for f in flags
+        ],
+
+        "lenderRouting": lr,
+        "repaymentSources": {
+            "primary": rs.get("primary", ""),
+            "primaryBasis": rs.get("primary_justification", ""),
+            "secondary": rs.get("secondary", ""),
+            "secondaryAssessment": rs.get("secondary_assessment", ""),
+            "dualSourceConfidence": rs.get("dual_source_confidence", ""),
+        },
+        "executiveSummary": s11.get("executive_summary", ""),
+        "dataNeeded": s11.get("data_needed", []),
+        "section11Raw": s11,  # Preserve full schema for future use
+    }
+
+    # Individual branch
+    if deal_type == "individual" and ind:
+        liq = ind.get("liquidity", {})
+        ratios = ind.get("ratios", {})
+        analysis["incomeNormalization"] = {
+            "qualifyingIncome": ind.get("qualifyingIncome", 0),
+            "qualifyingYear": ind.get("governingYear"),
+            "taxYears": ind.get("taxYears", []),
+            "afterTaxQualifyingIncome": ind.get("qualifyingIncome", 0) * 0.64,
+            "k1Detail": [
+                {
+                    "entityName": k.get("entity", ""),
+                    "participationType": k.get("participation", ""),
+                    "year1Box1": k.get("year_1_box1", 0),
+                    "year2Box1": k.get("year_2_box1", 0),
+                    "qualifyingIncome": k.get("normalized", 0),
+                    "excluded": k.get("excluded", False),
+                    "exclusionReason": k.get("treatment", ""),
+                }
+                for k in ind.get("k1Detail", [])
+            ],
+            "year1Total": ind.get("qualifyingIncome", 0),
+            "year2Total": ind.get("qualifyingIncome", 0),
+        }
+        analysis["gdscr"] = {
+            "gdscr": ratios.get("gdscr_pro_forma", 0),
+            "assessment": _gdscr_label(ratios.get("gdscr_pro_forma", 0)),
+            "afterTaxIncome": ind.get("qualifyingIncome", 0) * 0.64,
+            "totalAnnualDS": analysis["transaction"]["totalProFormaDS"],
+        }
+        analysis["balanceSheet"] = {
+            "tier1NetLiquid": ind.get("netLiquidAssets", liq.get("eligible", 0)),
+            "tier1GrossLiquid": ind.get("totalLiquidAssets", liq.get("gross", 0)),
+            "marginLoanAdjustment": ind.get("marginLoans", 0),
+            "grossTotalAssets": ind.get("totalAssets", 0),
+            "totalLiabilities": ind.get("totalLiabilities", 0),
+            "statedNetWorth": ind.get("netWorth", 0),
+            "liquidityRatio": ratios.get("liquidity_ratio", 0),
+            "liquidityAssessment": _liquidity_label(ratios.get("liquidity_ratio", 0)),
+            "netWorthCoverage": ratios.get("net_worth_ratio", 0),
+            "leverageRatio": ratios.get("leverage_ratio", 0),
+            "tier1Assets": [
+                {
+                    "description": a.get("account_type", ""),
+                    "value": a.get("gross_value", 0),
+                    "encumbrance": a.get("margin_balance", 0) + a.get("pledged_amount", 0),
+                    "net": a.get("net_eligible", 0),
+                }
+                for a in liq.get("accounts", [])
+            ],
+            "entityGuaranteeLiquidity": {"adjustmentApplied": False},
+        }
+        analysis["guarantors"] = [
+            {
+                "name": g.get("party", ""),
+                "type": g.get("role", ""),
+                "netWorth": 0,
+                "liquidAssets": 0,
+                "guaranteeType": g.get("status", ""),
+            }
+            for g in ind.get("guarantor_package", [])
+        ]
+
+    # Corporate branch
+    elif deal_type in ("corporate", "company") and corp:
+        ebitda = corp.get("ebitda", {})
+        ratios = corp.get("ratios", {})
+        bs = corp.get("balanceSheet", {})
+        debt = corp.get("debtStack", {})
+        analysis["incomeNormalization"] = {
+            "qualifyingIncome": ebitda.get("qualifying", 0),
+            "qualifyingYear": corp.get("governingYear"),
+            "taxYears": corp.get("fiscalYears", []),
+            "year1Total": ebitda.get("year1", 0),
+            "year2Total": ebitda.get("year2", 0),
+            "k1Detail": [],
+            "note": f"Corporate deal — EBITDA basis. Entity: {corp.get('entityName','')}",
+        }
+        analysis["gdscr"] = {
+            "gdscr": ratios.get("dscr_pro_forma", 0),
+            "assessment": _gdscr_label(ratios.get("dscr_pro_forma", 0)),
+            "afterTaxIncome": ebitda.get("qualifying", 0),
+            "totalAnnualDS": analysis["transaction"]["totalProFormaDS"],
+        }
+        analysis["balanceSheet"] = {
+            "tier1NetLiquid": bs.get("totalCurrentAssets", 0),
+            "tier1GrossLiquid": bs.get("totalCurrentAssets", 0),
+            "grossTotalAssets": bs.get("totalAssets", 0),
+            "totalLiabilities": bs.get("totalLiabilities", 0),
+            "statedNetWorth": bs.get("entityNetWorth", 0),
+            "liquidityRatio": bs.get("currentRatio", 0),
+            "liquidityAssessment": _liquidity_label(bs.get("currentRatio", 0)),
+            "netWorthCoverage": bs.get("entityNetWorth", 0) / analysis["transaction"]["loanAmount"]
+                                if analysis["transaction"]["loanAmount"] else 0,
+            "leverageRatio": bs.get("leverageRatio", 0),
+            "tier1Assets": [],
+            "entityGuaranteeLiquidity": {"adjustmentApplied": False},
+        }
+        analysis["guarantors"] = [
+            {
+                "name": g.get("name", ""),
+                "type": g.get("type", ""),
+                "netWorth": g.get("netWorth", 0),
+                "liquidAssets": g.get("liquidAssets", 0),
+                "guaranteeType": g.get("guaranteeType", "Full"),
+            }
+            for g in corp.get("guarantors", [])
+        ]
+
+    return analysis
+
+
+def _orr_to_band(rating: str) -> str:
+    bands = {
+        "1": "Exceptional", "1+": "Exceptional", "1-": "Exceptional",
+        "2": "Very Strong", "2+": "Very Strong", "2-": "Very Strong",
+        "3": "Strong", "3+": "Strong", "3-": "Strong",
+        "4": "Good", "4+": "Good", "4-": "Good",
+        "5": "Acceptable", "5+": "Acceptable", "5-": "Acceptable",
+        "6": "Marginal", "6+": "Marginal", "6-": "Marginal",
+        "7": "Difficult", "8": "Hard Decline",
+    }
+    return bands.get(str(rating).strip(), "")
+
+
+def _gdscr_label(g: float) -> str:
+    if g >= 2.0: return "Strong"
+    if g >= 1.5: return "Adequate"
+    if g >= 1.25: return "Marginal"
+    return "Below threshold"
+
+
+def _liquidity_label(r: float) -> str:
+    if r >= 2.0: return "Strong"
+    if r >= 1.0: return "Adequate"
+    if r >= 0.5: return "Marginal"
+    return "Critical"
+
+
+@app.post("/ingest-section11")
+async def ingest_section11(req: Section11Request):
+    """
+    Receive raw spreading prompt output, extract Section 11 JSON,
+    map to analysis format, and store/update the deal.
+    """
+    try:
+        # Extract JSON block from spreading prompt response
+        s11 = _extract_section11_json(req.raw_response)
+        if not s11:
+            raise HTTPException(status_code=422, detail="No valid JSON block found in response")
+
+        print(f"[/ingest-section11] deal_type={s11.get('meta',{}).get('deal_type')} "
+              f"borrower={s11.get('meta',{}).get('borrower_last_name')}")
+
+        # Map to engine-compatible analysis format
+        analysis = _map_section11_to_analysis(s11)
+
+        # If deal_id provided, update existing deal; otherwise create new
+        deal_id = req.deal_id or s11.get("meta", {}).get("deal_id") or generate_deal_id()
+        analysis["applicationId"] = deal_id
+
+        dp = s11.get("dealParameters", {})
+        col = s11.get("collateral", {})
+        rr = s11.get("riskRating", {})
+        flags = analysis.get("flags", [])
+
+        deal = {
+            "dealId": deal_id,
+            "applicationId": deal_id,
+            "status": "select_lender_pool",
+            "stage": "select_lender_pool",
+            "ioiCount": 0,
+            "receivedDate": s11.get("meta", {}).get("analysis_date", ""),
+            "borrowerName": analysis.get("borrowerName", req.borrower_name or ""),
+            "borrowerEmail": "",
+            "aircraft": f"{dp.get('aircraft_year','')} {dp.get('aircraft_make','')} {dp.get('aircraft_model','')}".strip(),
+            "aircraftSub": (
+                col.get("engine_program", "") + " · " +
+                (col.get("registration", "") or "N-reg") + " · " +
+                f"{col.get('aftt', 0):,} AFTT"
+            ),
+            "loanAmount": dp.get("loan_amount", 0),
+            "ltv": dp.get("ltv", 0),
+            "rating": rr.get("final_rating", ""),
+            "band": _orr_to_band(rr.get("final_rating", "")),
+            "disposition": rr.get("disposition", ""),
+            "gdscr": analysis.get("gdscr", {}).get("gdscr", 0),
+            "nwCoverage": analysis.get("balanceSheet", {}).get("netWorthCoverage", 0),
+            "flagCount": len(flags),
+            "criticalFlags": len([f for f in flags if f.get("severity") == "CRITICAL"]),
+            "analysis": analysis,
+            "transactionType": "purchase",
+        }
+
+        save_deal(deal)
+        print(f"[/ingest-section11] Saved deal {deal_id}")
+
+        return {
+            "success": True,
+            "dealId": deal_id,
+            "rating": rr.get("final_rating", ""),
+            "band": _orr_to_band(rr.get("final_rating", "")),
+            "gdscr": analysis.get("gdscr", {}).get("gdscr", 0),
+            "borrowerName": analysis.get("borrowerName", ""),
+            "aircraft": deal["aircraft"],
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        err = traceback.format_exc()
+        print(f"[/ingest-section11] ERROR:\n{err}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/extract")
