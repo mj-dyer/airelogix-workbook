@@ -271,6 +271,76 @@ Extract numbers exactly as they appear. Follow these rules precisely:
 - Return ONLY valid JSON, no markdown, no explanation"""
 
 # Single unified extraction prompt — send ALL documents at once for best results
+CORPORATE_PROMPT = """Analyze all uploaded corporate financial documents and extract the following data.
+Return ONLY a JSON object with exactly this structure:
+
+{
+  "entityName": "",
+  "entityType": "",
+  "fiscalYears": [2023, 2024],
+  "governingYear": 2023,
+  "financialStatementQuality": "audited",
+  "revenue": {
+    "year1": 0,
+    "year2": 0,
+    "qualifying": 0
+  },
+  "ebitda": {
+    "year1": 0,
+    "year2": 0,
+    "qualifying": 0,
+    "margin": 0.0,
+    "aircraftDAIncluded": false,
+    "aircraftDAAmount": 0
+  },
+  "netIncome": {
+    "year1": 0,
+    "year2": 0
+  },
+  "debtStack": {
+    "totalDebt": 0,
+    "seniorDebt": 0,
+    "existingAnnualDS": 0,
+    "debtToEbitda": 0.0
+  },
+  "balanceSheet": {
+    "totalAssets": 0,
+    "totalCurrentAssets": 0,
+    "totalLiabilities": 0,
+    "totalCurrentLiabilities": 0,
+    "entityNetWorth": 0,
+    "currentRatio": 0.0,
+    "leverageRatio": 0.0
+  },
+  "guarantors": [
+    {
+      "name": "",
+      "ownershipPct": 0.0,
+      "netWorth": 0,
+      "liquidAssets": 0,
+      "guaranteeType": "Full"
+    }
+  ],
+  "revenueConcentrationFlag": false,
+  "charterRevenueExcluded": false,
+  "charterRevenueAmount": 0,
+  "registration": "",
+  "dataConfidence": "high"
+}
+
+Rules:
+- Use the LOWER of two fiscal years as qualifying EBITDA (conservative year governs)
+- EBITDA = net income + interest + taxes + depreciation + amortization
+- If aircraft D&A is included in EBITDA, set aircraftDAIncluded: true and aircraftDAAmount to the amount
+- Do NOT add back aircraft D&A — it is a real operating cost
+- existingAnnualDS = total of all debt service obligations visible (loan payments, lease payments, LOC interest) annualized
+- excludeCharterRevenue: if any revenue is identified as charter/non-recurring, flag it
+- financialStatementQuality: "audited" | "reviewed" | "compiled" | "management" based on CPA opinion or lack thereof
+- currentRatio = totalCurrentAssets / totalCurrentLiabilities
+- leverageRatio = totalLiabilities / totalAssets
+- debtToEbitda = totalDebt / qualifying EBITDA
+- Use 0 for any field not found in the documents"""
+
 UNIFIED_PROMPT = """Analyze all uploaded financial documents and extract the following data.
 Return ONLY a JSON object with exactly this structure:
 
@@ -732,9 +802,12 @@ async def extract_documents(req: ExtractionRequest):
                 })
 
         # Add the extraction prompt
+        is_corporate = req.borrowerType in ("private_company", "corporate", "company")
+        selected_prompt = CORPORATE_PROMPT if is_corporate else UNIFIED_PROMPT
+        print(f"[/extract] Using {'CORPORATE' if is_corporate else 'INDIVIDUAL'} extraction prompt")
         content_blocks.append({
             "type": "text",
-            "text": UNIFIED_PROMPT
+            "text": selected_prompt
         })
 
         payload = {
@@ -818,39 +891,81 @@ def _empty_summary() -> dict:
 
 def _build_summary(extracted: dict) -> dict:
     """
-    Map extracted fields to the engine-ready financial summary format.
-    All values as strings to match wizard field format.
+    Map extracted fields to engine-ready financial summary format.
+    Handles both individual (HNWI) and corporate extraction results.
     """
-    qualifying = extracted.get("qualifyingIncome", 0) or 0
-    net_liquid = extracted.get("netLiquidAssets", 0) or 0
-    total_assets = extracted.get("totalAssets", 0) or 0
-    total_liabilities = extracted.get("totalLiabilities", 0) or 0
-    net_worth = extracted.get("netWorth", 0) or (total_assets - total_liabilities)
-    existing_ds = extracted.get("existingAnnualDebtService", 0) or 0
-    contingent = (extracted.get("marginLoans", 0) or 0) + (extracted.get("locBalance", 0) or 0)
+    # Detect which schema was returned
+    is_corporate = "ebitda" in extracted or "entityName" in extracted
 
-    # If net liquid not directly available, compute it
-    if not net_liquid:
-        gross_liquid = extracted.get("totalLiquidAssets", 0) or 0
-        margin = extracted.get("marginLoans", 0) or 0
-        pledged = extracted.get("pledgedAmounts", 0) or 0
-        loc = extracted.get("locBalance", 0) or 0
-        net_liquid = max(0, gross_liquid - margin - pledged - loc)
+    if is_corporate:
+        ebitda = extracted.get("ebitda", {}) or {}
+        bs = extracted.get("balanceSheet", {}) or {}
+        debt = extracted.get("debtStack", {}) or {}
+        qualifying = ebitda.get("qualifying", 0) or 0
+        total_assets = bs.get("totalAssets", 0) or 0
+        total_liabilities = bs.get("totalLiabilities", 0) or 0
+        net_worth = bs.get("entityNetWorth", 0) or (total_assets - total_liabilities)
+        existing_ds = debt.get("existingAnnualDS", 0) or 0
+        # For corporate, use current assets as proxy for liquid assets
+        liquid_assets = bs.get("totalCurrentAssets", 0) or 0
+        contingent = 0
 
-    return {
-        "recurringCash": str(int(qualifying)),
-        "totalAssets": str(int(total_assets or net_liquid)),
-        "liquidAssets": str(int(net_liquid)),
-        "existingDebt": str(int(existing_ds)),
-        "contingentLiabilities": str(int(contingent)),
-        "netWorth": str(int(net_worth)),
-        "governingYear": extracted.get("governingYear"),
-        "taxYears": extracted.get("taxYears", []),
-        "k1Detail": extracted.get("k1Detail", []),
-        "registration": extracted.get("registration", ""),
-        "documentSourced": True,
-        "dataConfidence": extracted.get("dataConfidence", "high")
-    }
+        return {
+            "recurringCash": str(int(qualifying)),
+            "totalAssets": str(int(total_assets)),
+            "liquidAssets": str(int(liquid_assets)),
+            "existingDebt": str(int(existing_ds)),
+            "contingentLiabilities": str(int(contingent)),
+            "netWorth": str(int(net_worth)),
+            "governingYear": extracted.get("governingYear"),
+            "taxYears": extracted.get("fiscalYears", []),
+            "k1Detail": [],
+            "registration": extracted.get("registration", ""),
+            "documentSourced": True,
+            "dataConfidence": extracted.get("dataConfidence", "high"),
+            # Corporate-specific fields passed through for engine
+            "ebitda": ebitda,
+            "revenue": extracted.get("revenue", {}),
+            "debtStack": debt,
+            "corporateBalanceSheet": bs,
+            "guarantors": extracted.get("guarantors", []),
+            "entityName": extracted.get("entityName", ""),
+            "entityType": extracted.get("entityType", ""),
+            "financialStatementQuality": extracted.get("financialStatementQuality", ""),
+            "isCorporate": True,
+        }
+    else:
+        # Individual / HNWI path
+        qualifying = extracted.get("qualifyingIncome", 0) or 0
+        net_liquid = extracted.get("netLiquidAssets", 0) or 0
+        total_assets = extracted.get("totalAssets", 0) or 0
+        total_liabilities = extracted.get("totalLiabilities", 0) or 0
+        net_worth = extracted.get("netWorth", 0) or (total_assets - total_liabilities)
+        existing_ds = extracted.get("existingAnnualDebtService", 0) or 0
+        contingent = (extracted.get("marginLoans", 0) or 0) + (extracted.get("locBalance", 0) or 0)
+
+        if not net_liquid:
+            gross_liquid = extracted.get("totalLiquidAssets", 0) or 0
+            margin = extracted.get("marginLoans", 0) or 0
+            pledged = extracted.get("pledgedAmounts", 0) or 0
+            loc = extracted.get("locBalance", 0) or 0
+            net_liquid = max(0, gross_liquid - margin - pledged - loc)
+
+        return {
+            "recurringCash": str(int(qualifying)),
+            "totalAssets": str(int(total_assets or net_liquid)),
+            "liquidAssets": str(int(net_liquid)),
+            "existingDebt": str(int(existing_ds)),
+            "contingentLiabilities": str(int(contingent)),
+            "netWorth": str(int(net_worth)),
+            "governingYear": extracted.get("governingYear"),
+            "taxYears": extracted.get("taxYears", []),
+            "k1Detail": extracted.get("k1Detail", []),
+            "registration": extracted.get("registration", ""),
+            "documentSourced": True,
+            "dataConfidence": extracted.get("dataConfidence", "high"),
+            "isCorporate": False,
+        }
 
 
 @app.post("/parse-spec")
