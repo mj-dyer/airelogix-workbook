@@ -285,6 +285,42 @@ def get_balloon(fmv: float, loan: float, year: int, aftt: int,
 
 # ── GDSCR scoring (Factor 1) ──────────────────────────────────────────────────
 
+
+def score_corporate_dscr(dscr: float) -> float:
+    """Corporate DSCR scoring — stronger thresholds than individual GDSCR."""
+    if dscr > 3.0:   return 1.0
+    if dscr >= 2.4:  return 1.5
+    if dscr >= 2.0:  return 2.0
+    if dscr >= 1.75: return 2.5
+    if dscr >= 1.50: return 3.0
+    if dscr >= 1.35: return 3.5
+    if dscr >= 1.20: return 4.5
+    if dscr >= 1.10: return 5.5
+    if dscr >= 1.00: return 6.5
+    return 8.0
+
+
+def score_corporate_liquidity(current_ratio: float) -> float:
+    """Corporate current ratio scoring."""
+    if current_ratio > 3.0:  return 1.5
+    if current_ratio >= 2.0: return 2.5
+    if current_ratio >= 1.5: return 3.5
+    if current_ratio >= 1.2: return 4.5
+    if current_ratio >= 1.0: return 5.5
+    if current_ratio >= 0.8: return 6.5
+    return 8.0
+
+
+def score_financial_statement_quality(quality: str) -> float:
+    """F4 for corporate — financial statement quality flag."""
+    q = (quality or "").lower()
+    if "audited" in q:    return 2.0
+    if "reviewed" in q:   return 3.5
+    if "compiled" in q:   return 5.5
+    if "management" in q: return 8.0  # management-prepared = hard decline flag
+    return 3.5  # default: treated as reviewed
+
+
 def score_gdscr(gdscr: float) -> float:
     if gdscr > 5.0:   return 1.0
     if gdscr >= 4.0:  return 1.5
@@ -514,58 +550,99 @@ def run_analysis(submission: dict) -> dict:
     existing_annual_ds = float(str(financial.get("existingDebt", "0")).replace(",", "") or 0)
     total_pro_forma_ds = annual_aircraft_ds + existing_annual_ds
 
-    # ── Income normalization ───────────────────────────────────────────────────
+    # ── Financial analysis — routes on borrowerType ───────────────────────────
     def _parse_num(val):
         try:
             return float(str(val).replace(",", "").replace("$", "") or 0)
         except (ValueError, TypeError):
             return 0.0
 
-    total_assets = _parse_num(financial.get("totalAssets", "0"))
-    liquid_assets = _parse_num(financial.get("liquidAssets", "0"))
-    contingent_liabilities = _parse_num(financial.get("contingentLiabilities", "0"))
-    recurring_cash = _parse_num(financial.get("recurringCash", "0"))
-    net_worth_submitted = _parse_num(financial.get("netWorth", "0"))
-
-    # Liabilities: use submitted or derive from assets
-    total_liabilities = contingent_liabilities
-    if net_worth_submitted > 0 and total_assets > 0:
-        # Use submitted net worth directly
-        stated_net_worth = net_worth_submitted
-        total_liabilities = max(0, total_assets - stated_net_worth)
-    elif total_assets > 0:
-        stated_net_worth = max(0, total_assets - total_liabilities)
-    else:
-        # Fall back: use liquid assets as proxy for total assets
-        total_assets = liquid_assets
-        stated_net_worth = max(0, liquid_assets - total_liabilities)
-
-    # Income normalization — use recurring cash as qualifying income
-    qualifying_income = recurring_cash
-    # Estimate taxes at effective 36% for UHNW individuals
-    eff_tax_rate = 0.36
-    taxes_paid = qualifying_income * eff_tax_rate
-    after_tax_qualifying = qualifying_income * (1 - eff_tax_rate)
-
-    # Determine k1 entity count heuristic from borrower type
-    has_w2 = borrower_type == "individual"
-    k1_entities = 1 if borrower_type == "individual" else 2
+    is_corporate = borrower_type in ("private_company", "corporate", "company")
     variance_flag = False
     income_declining = False
 
-    # ── GDSCR ─────────────────────────────────────────────────────────────────
-    gdscr = qualifying_income / total_pro_forma_ds if total_pro_forma_ds > 0 else 0
-    gdscr_assessment = (
-        "Strong" if gdscr >= 2.0 else
-        "Adequate" if gdscr >= 1.5 else
-        "Marginal" if gdscr >= 1.0 else
-        "Below threshold"
-    )
+    if is_corporate:
+        # ── Corporate branch ─────────────────────────────────────────────────
+        # Read corporate fields from financial summary
+        ebitda_data = financial.get("ebitda", {}) or {}
+        bs_data = financial.get("corporateBalanceSheet", {}) or {}
+        debt_data = financial.get("debtStack", {}) or {}
+        revenue_data = financial.get("revenue", {}) or {}
 
-    # ── Balance sheet ratios ──────────────────────────────────────────────────
-    liquidity_ratio = liquid_assets / loan_amount if loan_amount > 0 else 0
-    net_worth_coverage = stated_net_worth / loan_amount if loan_amount > 0 else 0
-    leverage_ratio = total_liabilities / stated_net_worth if stated_net_worth > 0 else 0
+        qualifying_income = _parse_num(ebitda_data.get("qualifying", 0) or financial.get("recurringCash", "0"))
+        total_assets = _parse_num(bs_data.get("totalAssets", 0) or financial.get("totalAssets", "0"))
+        liquid_assets = _parse_num(bs_data.get("totalCurrentAssets", 0) or financial.get("liquidAssets", "0"))
+        total_liabilities = _parse_num(bs_data.get("totalLiabilities", 0) or financial.get("contingentLiabilities", "0"))
+        stated_net_worth = _parse_num(bs_data.get("entityNetWorth", 0) or financial.get("netWorth", "0"))
+        if stated_net_worth == 0 and total_assets > 0:
+            stated_net_worth = max(0, total_assets - total_liabilities)
+        contingent_liabilities = 0
+
+        # Corporate DSCR (EBITDA-based)
+        gdscr = qualifying_income / total_pro_forma_ds if total_pro_forma_ds > 0 else 0
+        gdscr_assessment = (
+            "Strong" if gdscr >= 2.4 else
+            "Acceptable" if gdscr >= 1.2 else
+            "Marginal" if gdscr >= 1.0 else
+            "Below threshold"
+        )
+
+        # Corporate balance sheet ratios
+        current_ratio = _parse_num(bs_data.get("currentRatio", 0))
+        if current_ratio == 0:
+            current_liab = _parse_num(bs_data.get("totalCurrentLiabilities", 0))
+            current_ratio = liquid_assets / current_liab if current_liab > 0 else 0
+        liquidity_ratio = current_ratio  # use current ratio as liquidity proxy
+        net_worth_coverage = stated_net_worth / loan_amount if loan_amount > 0 else 0
+        leverage_ratio = total_liabilities / total_assets if total_assets > 0 else 0
+        debt_to_ebitda = _parse_num(debt_data.get("debtToEbitda", 0))
+        if debt_to_ebitda == 0 and qualifying_income > 0:
+            debt_to_ebitda = _parse_num(debt_data.get("totalDebt", 0)) / qualifying_income
+
+        # Corporate income normalization block
+        eff_tax_rate = 0.25  # corporate effective rate
+        taxes_paid = qualifying_income * eff_tax_rate
+        after_tax_qualifying = qualifying_income * (1 - eff_tax_rate)
+        has_w2 = False
+        k1_entities = 0
+
+    else:
+        # ── Individual / HNWI branch ──────────────────────────────────────────
+        total_assets = _parse_num(financial.get("totalAssets", "0"))
+        liquid_assets = _parse_num(financial.get("liquidAssets", "0"))
+        contingent_liabilities = _parse_num(financial.get("contingentLiabilities", "0"))
+        recurring_cash = _parse_num(financial.get("recurringCash", "0"))
+        net_worth_submitted = _parse_num(financial.get("netWorth", "0"))
+
+        total_liabilities = contingent_liabilities
+        if net_worth_submitted > 0 and total_assets > 0:
+            stated_net_worth = net_worth_submitted
+            total_liabilities = max(0, total_assets - stated_net_worth)
+        elif total_assets > 0:
+            stated_net_worth = max(0, total_assets - total_liabilities)
+        else:
+            total_assets = liquid_assets
+            stated_net_worth = max(0, liquid_assets - total_liabilities)
+
+        qualifying_income = recurring_cash
+        eff_tax_rate = 0.36
+        taxes_paid = qualifying_income * eff_tax_rate
+        after_tax_qualifying = qualifying_income * (1 - eff_tax_rate)
+        has_w2 = borrower_type == "individual"
+        k1_entities = 1 if borrower_type == "individual" else 2
+        debt_to_ebitda = 0
+
+        gdscr = qualifying_income / total_pro_forma_ds if total_pro_forma_ds > 0 else 0
+        gdscr_assessment = (
+            "Strong" if gdscr >= 2.0 else
+            "Adequate" if gdscr >= 1.5 else
+            "Marginal" if gdscr >= 1.0 else
+            "Below threshold"
+        )
+
+        liquidity_ratio = liquid_assets / loan_amount if loan_amount > 0 else 0
+        net_worth_coverage = stated_net_worth / loan_amount if loan_amount > 0 else 0
+        leverage_ratio = total_liabilities / stated_net_worth if stated_net_worth > 0 else 0
 
     # Entity guarantee check
     entity_guarantee = liquid_assets > loan_amount * 0.5 and liquid_assets < loan_amount
@@ -588,12 +665,23 @@ def run_analysis(submission: dict) -> dict:
         }]
 
     # ── Six-factor scoring ────────────────────────────────────────────────────
-    f1 = score_gdscr(gdscr)
-    f2 = score_liquidity(adjusted_liquidity_ratio)
-    f3 = score_net_worth(net_worth_coverage)
-    f4 = score_income_quality(k1_entities, has_w2, variance_flag, income_declining)
-    f5 = score_ltv(ltv_vs_fmv)
-    f6 = score_collateral(aircraft_age, engine_program)
+    if is_corporate:
+        # Corporate factors use DSCR thresholds and current ratio
+        f1 = score_corporate_dscr(gdscr)
+        f2 = score_corporate_liquidity(liquidity_ratio)
+        f3 = score_net_worth(net_worth_coverage)
+        f4 = score_financial_statement_quality(
+            financial.get("financialStatementQuality", "")
+        )
+        f5 = score_ltv(ltv_vs_fmv)
+        f6 = score_collateral(aircraft_age, engine_program)
+    else:
+        f1 = score_gdscr(gdscr)
+        f2 = score_liquidity(adjusted_liquidity_ratio)
+        f3 = score_net_worth(net_worth_coverage)
+        f4 = score_income_quality(k1_entities, has_w2, variance_flag, income_declining)
+        f5 = score_ltv(ltv_vs_fmv)
+        f6 = score_collateral(aircraft_age, engine_program)
 
     weights = {
         "gdscr": 0.25, "liquidity": 0.22, "netWorth": 0.18,
