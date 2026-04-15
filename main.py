@@ -329,12 +329,20 @@ Return ONLY a JSON object with exactly this structure:
 }
 
 Rules:
+- PRIORITY: Read entity-level financial statements (income statement, balance sheet). Ignore personal financial statements of guarantors for entity fields.
 - Use the LOWER of two fiscal years as qualifying EBITDA (conservative year governs)
-- EBITDA = net income + interest + taxes + depreciation + amortization
-- If aircraft D&A is included in EBITDA, set aircraftDAIncluded: true and aircraftDAAmount to the amount
+- EBITDA = net income + interest expense + depreciation + amortization. For S-Corps, there is no income tax line — do not add back taxes.
+- One-time/non-recurring charges should be excluded from EBITDA (use normalized/adjusted EBITDA if shown)
 - Do NOT add back aircraft D&A — it is a real operating cost
-- existingAnnualDS = total of all debt service obligations visible (loan payments, lease payments, LOC interest) annualized
-- excludeCharterRevenue: if any revenue is identified as charter/non-recurring, flag it
+- revenue: read Total Net Revenue or Total Revenue from the income statement — not personal income
+- ebitda.year1/year2: read from EBITDA reconciliation table if present, otherwise compute from financials
+- balanceSheet: read from the entity balance sheet — Total Assets will be tens or hundreds of millions for a corporate borrower, not thousands
+- totalCurrentAssets: read the Current Assets subtotal from the balance sheet
+- totalCurrentLiabilities: read the Current Liabilities subtotal
+- entityNetWorth: read Total Shareholders Equity or Total Equity from the balance sheet
+- debtStack.totalDebt: sum of all interest-bearing debt (revolving credit, term loans, notes payable) — NOT accounts payable
+- debtStack.existingAnnualDS: annual principal + interest payments on existing debt only (exclude proposed aircraft loan)
+- guarantors: read from personal financial statements or guarantor schedules if present
 - financialStatementQuality: "audited" | "reviewed" | "compiled" | "management" based on CPA opinion or lack thereof
 - currentRatio = totalCurrentAssets / totalCurrentLiabilities
 - leverageRatio = totalLiabilities / totalAssets
@@ -785,7 +793,8 @@ async def extract_documents(req: ExtractionRequest):
 
             print(f"[/extract] Adding {filename} ({doc_type})")
 
-            if "pdf" in media_type.lower() or filename.lower().endswith(".pdf"):
+            fname_lower = filename.lower()
+            if "pdf" in media_type.lower() or fname_lower.endswith(".pdf"):
                 content_blocks.append({
                     "type": "document",
                     "source": {
@@ -794,11 +803,36 @@ async def extract_documents(req: ExtractionRequest):
                         "data": base64_data
                     }
                 })
-            # Non-PDF files: add as text note
+            elif fname_lower.endswith(".docx") or "wordprocessingml" in media_type.lower() or "msword" in media_type.lower():
+                # Extract text from docx and send as plain text
+                try:
+                    import base64 as _b64, io
+                    from docx import Document as _DocxDoc
+                    raw_bytes = _b64.b64decode(base64_data)
+                    doc_obj = _DocxDoc(io.BytesIO(raw_bytes))
+                    docx_text = "\n".join(p.text for p in doc_obj.paragraphs if p.text.strip())
+                    # Also extract tables
+                    for table in doc_obj.tables:
+                        for row in table.rows:
+                            row_text = "  |  ".join(cell.text.strip() for cell in row.cells if cell.text.strip())
+                            if row_text:
+                                docx_text += "\n" + row_text
+                    print(f"[/extract] Extracted {len(docx_text)} chars from {filename}")
+                    content_blocks.append({
+                        "type": "text",
+                        "text": f"=== DOCUMENT: {filename} ({doc_type}) ===\n{docx_text}\n=== END {filename} ==="
+                    })
+                except Exception as docx_err:
+                    print(f"[/extract] DOCX extraction failed for {filename}: {docx_err}")
+                    content_blocks.append({
+                        "type": "text",
+                        "text": f"[Could not extract text from {filename} — {docx_err}]"
+                    })
             else:
+                # Unknown file type — add filename note
                 content_blocks.append({
                     "type": "text",
-                    "text": f"[File uploaded: {filename} — type: {doc_type}. Extract any financial data visible.]"
+                    "text": f"[File uploaded: {filename} — type: {doc_type}. Format not supported for extraction.]"
                 })
 
         # Add the extraction prompt
