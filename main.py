@@ -211,7 +211,7 @@ def get_deal(deal_id: str):
 def patch_status(deal_id: str, update: StatusUpdate):
     valid = [
         "application_submitted", "under_review", "select_lender_pool",
-        "package_distributed", "ioi_received", "lender_selected", "closed", "passed"
+        "package_distributed", "ioi_received", "lender_selected", "closed", "passed", "archived"
     ]
     if update.status not in valid:
         raise HTTPException(status_code=400, detail=f"Invalid status: {update.status}")
@@ -219,6 +219,15 @@ def patch_status(deal_id: str, update: StatusUpdate):
     if not deal:
         raise HTTPException(status_code=404, detail=f"Deal {deal_id} not found")
     return {"success": True, "dealId": deal_id, "status": update.status}
+
+
+@app.delete("/deals/{deal_id}")
+def archive_deal(deal_id: str):
+    """Archive a deal — removes from active queue, preserves record."""
+    deal = update_deal_status(deal_id, "archived")
+    if not deal:
+        raise HTTPException(status_code=404, detail="Deal not found")
+    return {"success": True, "deal_id": deal_id, "stage": "archived"}
 
 
 @app.post("/deals/{deal_id}/ioi")
