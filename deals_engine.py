@@ -279,8 +279,10 @@ def get_balloon(fmv: float, loan: float, year: int, aftt: int,
         depr_rate = 0.035
 
     fmv_at_maturity = fmv * ((1 - depr_rate) ** term_years)
+    # Balloon = projected FMV at maturity × standard LTV covenant (70%)
+    # This is collateral-based — independent of advance amount
     balloon = fmv_at_maturity * 0.70
-    return min(balloon, loan * 0.90)
+    return balloon
 
 
 # ── GDSCR scoring (Factor 1) ──────────────────────────────────────────────────
