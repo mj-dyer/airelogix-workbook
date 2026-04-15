@@ -862,21 +862,37 @@ def run_analysis(submission: dict) -> dict:
             "year2Box1": qualifying_income,
         })
 
+        # Pull corporate-specific fields from financial summary if available
+    ebitda_data = financial.get("ebitda", {}) or {} if is_corporate else {}
+    revenue_data = financial.get("revenue", {}) or {} if is_corporate else {}
+    stmt_quality = financial.get("financialStatementQuality", "") if is_corporate else ""
+    corp_entity_name = financial.get("entityName", borrower_name) if is_corporate else ""
+    _governing_year = financial.get("governingYear", cur_year - 1) if is_corporate else cur_year - 1
+    _tax_years = financial.get("taxYears", [cur_year - 2, cur_year - 1]) if is_corporate else [cur_year - 2, cur_year - 1]
+    _year1_total = float(ebitda_data.get("year1", qualifying_income)) if is_corporate else qualifying_income
+    _year2_total = float(ebitda_data.get("year2", qualifying_income)) if is_corporate else qualifying_income
+
     income_normalization = {
-        "qualifyingYear": cur_year - 1,
+        "qualifyingYear": _governing_year,
         "qualifyingIncome": qualifying_income,
         "afterTaxQualifyingIncome": after_tax_qualifying,
         "taxesPaidLowerYear": taxes_paid,
         "variancePct": 0.0,
         "varianceFlag": variance_flag,
-        "year1Total": qualifying_income,
-        "year2Total": qualifying_income,
-        "taxYears": [cur_year - 2, cur_year - 1],
+        "year1Total": _year1_total,
+        "year2Total": _year2_total,
+        "taxYears": _tax_years,
         "note": ("Corporate deal — EBITDA basis. Entity: " + borrower_name) if is_corporate else "Income based on borrower-reported recurring sources. Full tax return analysis required before final underwriting.",
         "k1Detail": k1_detail,
         "w2Detail": [{"employer": "Primary Employment", "year1": qualifying_income, "year2": qualifying_income}] if has_w2 else [],
         "portfolioIncome": {},
         "capitalGains": {},
+        # Corporate-specific fields
+        "financialStatementQuality": stmt_quality,
+        "entityName": corp_entity_name,
+        "revenueYear1": float(revenue_data.get("year1", 0)) if is_corporate else 0,
+        "revenueYear2": float(revenue_data.get("year2", 0)) if is_corporate else 0,
+        "revenueQualifying": float(revenue_data.get("qualifying", 0)) if is_corporate else 0,
     }
 
     # ── Build final analysis object ───────────────────────────────────────────
@@ -946,6 +962,7 @@ def run_analysis(submission: dict) -> dict:
             "totalLiabilities": round(total_liabilities),
             "statedNetWorth": round(stated_net_worth),
             "liquidityRatio": round(liquidity_ratio, 4),
+            "currentRatio": round(liquidity_ratio, 4) if is_corporate else 0,
             "liquidityAssessment": (
                 "Strong" if liquidity_ratio >= 2.0 else
                 "Adequate" if liquidity_ratio >= 1.0 else
@@ -954,6 +971,9 @@ def run_analysis(submission: dict) -> dict:
             ),
             "netWorthCoverage": round(net_worth_coverage, 2),
             "leverageRatio": round(leverage_ratio, 4),
+            "debtToEbitda": round(debt_to_ebitda, 2) if is_corporate else 0,
+            "totalCurrentAssets": round(liquid_assets) if is_corporate else 0,
+            "totalCurrentLiabilities": round(_parse_num(financial.get("corporateBalanceSheet", {}).get("totalCurrentLiabilities", 0))) if is_corporate else 0,
             "tier1Assets": [
                 {"description": "Reported liquid assets (cash, brokerage, money market)", "value": liquid_assets, "encumbrance": 0, "net": liquid_assets}
             ],
