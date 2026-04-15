@@ -872,7 +872,7 @@ def run_analysis(submission: dict) -> dict:
         "year1Total": qualifying_income,
         "year2Total": qualifying_income,
         "taxYears": [cur_year - 2, cur_year - 1],
-        "note": "Income based on borrower-reported recurring sources. Full tax return analysis required before final underwriting.",
+        "note": ("Corporate deal — EBITDA basis. Entity: " + borrower_name) if is_corporate else "Income based on borrower-reported recurring sources. Full tax return analysis required before final underwriting.",
         "k1Detail": k1_detail,
         "w2Detail": [{"employer": "Primary Employment", "year1": qualifying_income, "year2": qualifying_income}] if has_w2 else [],
         "portfolioIncome": {},
@@ -885,6 +885,7 @@ def run_analysis(submission: dict) -> dict:
         "applicationId": submission.get("applicationId", f"AL-{cur_year}-0001"),
         "borrowerName": borrower_name,
         "borrowerEmail": email,
+        "dealType": borrower_type,
         "aircraft": {
             "description": aircraft_description,
             "serialNumber": aircraft_serial or "TBD",
