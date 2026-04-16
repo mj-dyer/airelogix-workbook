@@ -5,7 +5,7 @@ FastAPI -- workbook generation + deal management
 
 import io, re, tempfile, os, traceback
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -17,6 +17,7 @@ from deals_store import (
     save_deal, load_deal, list_deals,
     update_deal_status, save_ioi, load_iois, generate_deal_id
 )
+from bio_engine import generate_bio
 
 app = FastAPI(title="AireLogix API", version="0.2.0")
 
@@ -38,6 +39,7 @@ class DealSubmission(BaseModel):
     loanPrefs: dict
     borrowerType: Optional[str] = "individual"
     transactionType: Optional[str] = "purchase"
+    profile: Optional[dict] = {}  # Borrower profile step — occupation, URLs, uploaded bio text, etc.
 
 class StatusUpdate(BaseModel):
     status: str
@@ -101,7 +103,7 @@ def generate(req: WorkbookRequest):
 
 
 @app.post("/deals")
-def submit_deal(submission: DealSubmission):
+def submit_deal(submission: DealSubmission, background_tasks: BackgroundTasks):
     try:
         data = submission.dict()
         print(f"[/deals] keys={list(data.keys())}")
@@ -146,6 +148,16 @@ def submit_deal(submission: DealSubmission):
 
         save_deal(deal)
         print(f"[/deals] saved {deal_id}")
+
+        # Fire bio research immediately in the background — ready before underwriter opens the deal
+        background_tasks.add_task(
+            generate_bio,
+            deal_id,
+            analysis["borrowerName"],
+            data.get("borrowerType", "individual"),
+            data.get("profile", {}),
+            analysis,
+        )
 
         return {
             "success": True,

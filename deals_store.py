@@ -158,6 +158,27 @@ def update_deal_status(deal_id: str, status: str) -> Optional[dict]:
         save_deal(deal)
     return deal
 
+def update_deal_bio(deal_id: str, borrower_profile: dict) -> None:
+    """Save borrowerProfile to an existing deal record without touching other fields."""
+    deal = load_deal(deal_id)
+    if not deal:
+        print(f"[deals_store] update_deal_bio: deal {deal_id} not found")
+        return
+    deal["borrowerProfile"] = borrower_profile
+    deal["updatedAt"] = datetime.now(timezone.utc).isoformat()
+    if _USE_DB:
+        conn = _get_conn()
+        try:
+            conn.run(
+                "UPDATE deals SET data=:data, updated_at=NOW() WHERE deal_id=:deal_id",
+                data=json.dumps(deal), deal_id=deal_id
+            )
+        finally:
+            conn.close()
+    else:
+        save_deal(deal)
+
+
 def save_ioi(deal_id: str, ioi: dict) -> str:
     ioi_id = ioi.get("ioiId") or str(uuid.uuid4())[:8].upper()
     ioi["ioiId"] = ioi_id
