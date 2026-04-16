@@ -1,5 +1,5 @@
 # AireLogix — Claude Code Context Document
-**Version:** 2.0 | **April 2026** | Replaces AireLogix_Handoff_v1_8_Updated.md
+**Version:** 2.1 | **April 2026** | Updates: HNW lender portal overhaul, Vercel CLI deploy
 
 ---
 
@@ -22,8 +22,16 @@ Then state your goal for the session. Claude Code will confirm its understanding
 | Repo | Live URL | Deploy Method | Primary File |
 |---|---|---|---|
 | `airelogix-deploy` | dev.airelogix.com | Vercel — **manual redeploy required** | `public/index.html` |
-| `airelogix-lender` | lender.airelogix.com | Vercel — **manual redeploy required** | `public/index.html` |
+| `airelogix-lender` | lender.airelogix.com | Vercel CLI — **auto-deploy script available** | `public/index.html` |
 | `airelogix-workbook` | airelogix-workbook-production.up.railway.app | Railway — **auto-deploys on git push** | `main.py`, `deals_engine.py`, `deals_store.py`, `generate_workbook.py` |
+
+### Vercel CLI Deploy (airelogix-lender)
+```bash
+cd ~/Documents/airelogix-lender
+VERCEL_TOKEN=<VERCEL_TOKEN> ~/.npm-global/bin/vercel --prod --yes
+```
+Vercel account email: `mj.dyer@outlook.com`. Git author email must match — `COMMIT_AUTHOR_REQUIRED` is enforced.
+Git global config: `git config --global user.email "mj.dyer@outlook.com"`
 
 ### Critical Frontend Constraint — Never Violate
 
@@ -44,6 +52,7 @@ el("div", {className: "card"}, el("span", null, "Hello"))
 3. **Run syntax check** after every JS edit: `node --check public/index.html`
 4. **Run syntax check** after every Python edit: `python3 -c "import ast; ast.parse(open('file.py').read()); print('OK')"`
 5. **Commit and push** — ask for confirmation before pushing
+6. **Deploy lender portal** — run Vercel CLI command above after push
 
 ### Critical ASI (Automatic Semicolon Insertion) Rule
 
@@ -51,9 +60,11 @@ The lender portal's `return el()` statement is one massive expression spanning t
 - A line ends with a value (`null,`, `"string"`, `)`)
 - The next line starts with an expression that could be parsed as continuation
 
-**The fix, used throughout:** Extract complex multiline ternary expressions as **pre-declared variables** before the `return` statement. Examples already in the file: `entityGuarCard`, `standaloneCard`, `corpBSTab`, `hnwBSTab`, `loanFieldEl`.
+**The fix, used throughout:** Extract complex multiline ternary expressions as **pre-declared variables** before the `return` statement. Examples already in the file: `entityGuarCard`, `standaloneCard`, `corpBSTab`, `loanFieldEl`.
 
 **Never** put a new complex ternary directly inside the `return el()` body if it spans multiple lines.
+
+**Always validate paren balance** with `node --check` after any el() nesting changes — the error is reported at the close line, not where the mismatch starts.
 
 ---
 
@@ -128,6 +139,17 @@ is_corporate = borrowerType in ("private_company", "corporate", "company")
 - **Individual (HNWI):** GDSCR = gross qualifying income / total pro forma DS
 - **Corporate:** DSCR = Adjusted EBITDA / total pro forma DS (standalone test)
 
+### Analysis Output — HNW Fields (added April 2026)
+The following are passed through from `financial` dict to top-level analysis:
+```python
+"agi": _parse_num(financial.get("agi", 0))          # 0 for corporate
+"federalTaxesPaid": _parse_num(financial.get("federalTaxesPaid", 0))  # 0 for corporate
+"debtDetail": financial.get("debtDetail", [])        # [] for corporate
+"trustStructures": financial.get("trustStructures", [])  # [] for corporate
+# liquidDetail attached to balanceSheet:
+analysis["balanceSheet"]["liquidDetail"] = financial.get("liquidDetail", [])
+```
+
 ### Collateral Curves — All Three Active
 
 | Aircraft | Function | Vintage Range | Data Points |
@@ -180,9 +202,53 @@ SOFR OIS + 200bps flat spread. SOFR fallback = 4.30% (total = 6.30%).
 
 Routes on `borrowerType`:
 - **Individual:** `UNIFIED_PROMPT` — extracts qualifying income, K-1 detail, liquid assets, existing debt, net worth, registration
-- **Corporate:** `CORPORATE_PROMPT` — extracts EBITDA by year, revenue by year, entity balance sheet (current assets, total assets, liabilities, NW, current ratio), debt stack, financial statement quality, guarantors
+- **Corporate:** `CORPORATE_PROMPT` — extracts EBITDA by year, revenue by year, entity balance sheet, debt stack, financial statement quality, guarantors
 
-**DOCX support:** `.docx` files are decoded from base64, extracted via `python-docx` (paragraphs + tables → plain text), then sent to Claude as a text block. This fixed the root cause of all corporate extraction failures where docx files were being replaced with `[File uploaded: filename...]` placeholder.
+### UNIFIED_PROMPT Extraction Schema (Individual — current as of April 2026)
+```json
+{
+  "agi": 0,
+  "federalTaxesPaid": 0,
+  "k1Detail": [{
+    "entityName": "",
+    "entityType": "LLC",
+    "ownershipPct": 0,
+    "participationType": "",
+    "year1Box1": 0,
+    "year2Box1": 0,
+    "year1Distributions": 0,
+    "year2Distributions": 0,
+    "qualifyingIncome": 0,
+    "excluded": false,
+    "exclusionReason": ""
+  }],
+  "liquidDetail": [{
+    "institution": "",
+    "accountType": "",
+    "balance": 0,
+    "pledged": false,
+    "marginLoanBalance": 0,
+    "note": ""
+  }],
+  "debtDetail": [{
+    "creditor": "",
+    "accountType": "",
+    "balance": 0,
+    "monthlyPayment": 0,
+    "annualPayment": 0,
+    "note": ""
+  }],
+  "trustStructures": [{
+    "trustName": "",
+    "trustType": "revocable",
+    "liquidAssets": 0,
+    "borrowerHasAccess": false,
+    "note": ""
+  }]
+}
+```
+
+**DOCX support:** `.docx` files are decoded from base64, extracted via `python-docx` (paragraphs + tables → plain text), then sent to Claude as a text block.
 
 **EIS vs CoA for year derivation:** EIS (Entry Into Service) date takes priority over Certificate of Airworthiness date when deriving aircraft year from spec sheet.
 
@@ -198,11 +264,14 @@ Routes on `borrowerType`:
 - **Payment:** $112,239/mo (balloon-aware)
 - **FMV:** $18,252,000 (CL350 v4 curve, JSSI ESP +3.5%)
 - **Qualifying income:** $3,935,600 (FY2023 lower year)
+- **AGI:** $4,312,400 | **Federal Taxes Paid:** $1,338,100
 - **GDSCR:** 1.80x
 - **Existing DS:** $836,858/yr
 - **Net liquid:** $25,698,842
-- **ORR:** 2 Very Strong
-- **Seeded deal ID:** AL-2026-CALLOWAY (hardcoded in deals_store.py)
+- **K-1 entities:** 5 (Calloway Capital Partners LP, Calloway Real Estate Fund I LP, Calloway Aviation Leasing LLC, Calloway Energy Holdings LLC, Calloway Hospitality Group LLC)
+- **Debt:** First Horizon primary residence $2.18M, First Horizon vacation home $1.42M, Morgan Stanley LOC $1.5M, Morgan Stanley margin $850K, First Horizon commercial RE $4.2M
+- **Trusts:** James R. Calloway Revocable Trust (access=true), Calloway Family Irrevocable Trust (access=false)
+- **Seeded deal ID:** AL-2026-CALLOWAY (hardcoded in deals_store.py — force-refreshed on startup)
 
 ### Meridian Industrial Solutions (Corporate — Demo)
 - **Borrower:** Meridian Industrial Solutions Inc., Columbus OH (S-Corp)
@@ -282,19 +351,38 @@ var isCorp = a.dealType === "private_company" || a.dealType === "corporate" ||
 | HNW Deal | Corporate Deal |
 |---|---|
 | Overview | Overview |
-| Scorecard | Scorecard |
-| Income | EBITDA |
-| Balance Sheet | Corporate B/S |
-| Collateral | Collateral |
-| Guarantors | Guarantors |
-| Flags | Flags |
+| Income & Tax | EBITDA |
+| Liquidity | Corporate B/S |
+| Debt & Service | Collateral |
+| Collateral | Guarantors |
+| Guarantors | Flags |
+| Flags | |
+
+Tab IDs: HNW = `["overview","income","liquidity","debtservice","collateral","guarantors","flags"]`
+Tab IDs: Corp = `["overview","ebitda","corpbs","collateral","guarantors","flags"]`
+
+**Scorecard and Rating/ORR have been removed from the HNW portal.** Lenders see raw financial data, not computed conclusions.
+
+### Deal Queue Table Columns
+`["Deal ID", "Aircraft", "Loan Amount", "LTV", "Net Worth", "IOIs", "Flags", "Status", "Received"]`
+
+### Tab Content Summary
+
+**Overview (HNW):** Financial Snapshot card — Qualifying Income, AGI, Taxes Paid, After-Tax Income, Net Liquid, Total Liabilities, Net Worth, Total Pro-Forma D/S. Plus Rate Note card.
+
+**Income & Tax:** 2-col grid (Income Summary + Tax Position with AGI/effective rate), then K-1 Entity Detail table (entity, type, own%, role, year1 box1, year2 box1, year1 distrib, year2 distrib).
+
+**Liquidity:** 2-col grid (Balance Sheet Summary + Trust Structures table), then Liquid Account Detail table (institution, account type, balance, margin loan, pledged, net available).
+
+**Debt & Service:** 2-col grid (Pro-Forma Debt Service + Income vs. Total Obligations), then Debt by Creditor table (creditor, account type, balance, monthly pmt, annual pmt, notes).
+
+**EBITDA (Corp):** 2-col grid (Revenue & EBITDA + Debt Service & Coverage).
 
 ### Pre-Declared Variables in DealDetail (critical for ASI)
 These are computed before the `return el()` statement to avoid JS parser failures:
 - `entityGuarCard` — entity guarantee liquidity adjustment card
 - `standaloneCard` — EBITDA standalone test card (corporate)
 - `corpBSTab` — corporate balance sheet tab content
-- `hnwBSTab` — individual balance sheet tab content
 
 ### Sidebar Navigation
 ```javascript
@@ -311,10 +399,7 @@ navItems = [
 
 ### Deal Actions (DealDetail action bar)
 - **← Deal Queue** (left, always)
-- **Pass on Deal** (right, grouped) — `PATCH /deals/{id}/status` with `status: "passed"`
-- **Archive** (right, grouped) — `DELETE /deals/{id}` then `onBack()`
-
-Both Pass and Archive are wrapped in a `display:flex, gap:8` div, right-aligned.
+- **IOI**, **Confirm Funding**, **Funded** badge, **Pass on Deal**, **Archive** (right, grouped in one flex div)
 
 ### displayDeals Filter
 ```javascript
@@ -329,26 +414,24 @@ Active deals filter: `stage !== "passed" && stage !== "archived"`
 
 ### Corporate B/S Tab Fields (corpBSTab)
 Reads from `a.balanceSheet`:
-- `grossTotalAssets` — Total Assets
-- `totalCurrentAssets` — Current Assets (falls back to `tier1NetLiquid`)
-- `totalLiabilities` — Total Liabilities
-- `totalCurrentLiabilities` — Current Liabilities
-- `statedNetWorth` — Entity Net Worth
-- `netWorthCoverage` — Net Worth Coverage
-- `currentRatio` — Current Ratio (falls back to `liquidityRatio`)
-- `leverageRatio` — Leverage (Liabilities/Assets)
-- `debtToEbitda` — Debt/EBITDA
-- `a.transaction.ltvVsFMV` — LTV vs FMV
+- `grossTotalAssets`, `totalCurrentAssets`, `totalLiabilities`, `totalCurrentLiabilities`
+- `statedNetWorth`, `netWorthCoverage`, `currentRatio`, `leverageRatio`, `debtToEbitda`
+- `a.transaction.ltvVsFMV`
 
-All values show `—` when 0 or missing. Tab only shows data if `grossTotalAssets > 0 || statedNetWorth > 0`.
+All values show `—` when 0 or missing.
 
 ### Tab Label Dict
 ```javascript
 {
-  "overview":"Overview","scorecard":"Scorecard","income":"Income",
-  "ebitda":"EBITDA","balance":"Balance Sheet","entity":"Corp B/S",
-  "corpbs":"Corporate B/S","collateral":"Collateral",
-  "guarantors":"Guarantors","flags":"Flags"
+  "overview":"Overview",
+  "income":"Income & Tax",
+  "liquidity":"Liquidity",
+  "debtservice":"Debt & Service",
+  "ebitda":"EBITDA",
+  "corpbs":"Corporate B/S",
+  "collateral":"Collateral",
+  "guarantors":"Guarantors",
+  "flags":"Flags"
 }
 ```
 
@@ -417,19 +500,21 @@ Python calculates nothing — Excel calculates everything. Run recalc to confirm
 ## OPEN ITEMS — PRIORITIZED
 
 ### P1 — Before Demo
-1. **Structure Explorer payment not updating** — stale closure bug on `rateStr` in the payment calculator. The payment display doesn't recalculate when rate or term changes because the closure captures the initial `rateStr` value. Fix: use `useMemo` or `useRef` to ensure fresh reads.
+1. **Structure Explorer payment not updating** — stale closure bug on `rateStr` in the payment calculator. Fix: use `useMemo` or `useRef` to ensure fresh reads.
 2. **Lender routing thresholds** — all lenders show "below appetite" on live deals. Routing logic needs calibration against actual lender appetite profiles.
 3. **Corporate branch validation** — Meridian deal needs to be deleted from Postgres and resubmitted after deploying the `.docx` extraction fix + corporate engine branch. Expected: ORR 3, DSCR 2.81x.
+4. **Corporate lender portal overhaul** — apply same philosophy as HNW overhaul: remove DSCR display, remove scorecard tab, remove ORR/rating, show EBITDA by year, revenue trend, and raw balance sheet ratios. Start after HNW overhaul is validated in demo.
 
 ### P2 — Demo Polish
-4. **Status timeline** — consolidate from current stages to 5 clean stages in the borrower dashboard
-5. **Disclosure Step 1 copy** — shorten the text on the first disclosure screen
+5. **Status timeline** — consolidate from current stages to 5 clean stages in the borrower dashboard
+6. **Disclosure Step 1 copy** — shorten the text on the first disclosure screen
 
 ### P3 — Platform
-6. **Existing lender relationship disclosure flow** — after credit engine identifies lender pool, show borrower matches and let them opt lenders in/out, flag pre-existing relationships, add a note. Sits between analysis output and distribution. Not yet built.
-7. **Auth / deal-by-email lookup** — sign-in doesn't authenticate against API. Borrowers can't retrieve their deal status by email.
-8. **Section 11 async doc generation** — the flow from spreading prompt → `/ingest-section11` → async workbook/memo generation is wired but the async doc generation itself is pending.
-9. **Corporate workbook tabs** — Revenue/EBITDA and Entity Debt Stack tabs not yet built for the 9-tab workbook (corporate deals).
+7. **Existing lender relationship disclosure flow** — after credit engine identifies lender pool, show borrower matches and let them opt lenders in/out, flag pre-existing relationships. Not yet built.
+8. **Auth / deal-by-email lookup** — sign-in doesn't authenticate against API. Borrowers can't retrieve their deal status by email.
+9. **Section 11 async doc generation** — the flow from spreading prompt → `/ingest-section11` → async workbook/memo generation is wired but the async doc generation itself is pending.
+10. **Corporate workbook tabs** — Revenue/EBITDA and Entity Debt Stack tabs not yet built for the 9-tab workbook (corporate deals).
+11. **Borrower app Vercel CLI deploy** — not yet set up; still requires manual redeploy via Vercel dashboard.
 
 ---
 
@@ -489,8 +574,8 @@ Steel: #8ba4be
 6. Never use JSX, npm, or build tools on the frontend
 7. Never cap balloon at loan*0.90 — balloon is purely FMV-based
 8. Always confirm before git push
-9. Commit messages: descriptive and specific ("Fix balloon cap in deals_engine.py")
-10. Railway auto-deploys on push; Vercel requires manual redeploy trigger
+9. Commit messages: descriptive and specific
+10. Railway auto-deploys on push; airelogix-lender uses Vercel CLI (see deploy command above); airelogix-deploy still requires manual Vercel dashboard redeploy
 ```
 
 ---
@@ -501,6 +586,5 @@ The credit spreading prompt is a separate document: `AireLogix_Spreading_Prompt_
 
 ---
 
-*CLAUDE_CONTEXT.md v2.0 | April 2026 | AireLogix Aviation Finance Intelligence*
-*Supersedes AireLogix_Handoff_v1_8_Updated.md*
-*Covers all work through April 15, 2026 — three validated demo deals (Calloway, Meridian), corporate engine branch, docx extraction, dual LTV/dollar input, archive function, Archived nav folder, button alignment fixes, Corp B/S tab rebuild.*
+*CLAUDE_CONTEXT.md v2.1 | April 2026 | AireLogix Aviation Finance Intelligence*
+*Covers all work through April 15, 2026 — HNW lender portal overhaul (removed scorecard/rating/DSCR, added Income & Tax / Liquidity / Debt & Service tabs with raw financial data), Vercel CLI deploy configured for airelogix-lender, new extraction fields (agi, federalTaxesPaid, k1Detail distributions/entityType/ownershipPct, liquidDetail, debtDetail, trustStructures), Calloway demo enriched.*
