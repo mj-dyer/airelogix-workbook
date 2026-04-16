@@ -366,12 +366,18 @@ Return ONLY a JSON object with exactly this structure:
   "taxYears": [2023, 2024],
   "governingYear": 2023,
   "qualifyingIncome": 0,
+  "agi": 0,
+  "federalTaxesPaid": 0,
   "k1Detail": [
     {
       "entityName": "",
+      "entityType": "LLC",
+      "ownershipPct": 0,
       "participationType": "Member-Manager",
       "year1Box1": 0,
       "year2Box1": 0,
+      "year1Distributions": 0,
+      "year2Distributions": 0,
       "qualifyingIncome": 0,
       "excluded": false,
       "exclusionReason": ""
@@ -386,6 +392,16 @@ Return ONLY a JSON object with exactly this structure:
   "cashAndChecking": 0,
   "brokerageAccounts": 0,
   "retirementAccounts": 0,
+  "liquidDetail": [
+    {
+      "institution": "",
+      "accountType": "",
+      "balance": 0,
+      "pledged": false,
+      "marginLoanBalance": 0,
+      "note": ""
+    }
+  ],
   "marginLoans": 0,
   "pledgedAmounts": 0,
   "locBalance": 0,
@@ -395,6 +411,25 @@ Return ONLY a JSON object with exactly this structure:
   "mortgageBalances": 0,
   "otherLiabilities": 0,
   "netWorth": 0,
+  "debtDetail": [
+    {
+      "creditor": "",
+      "accountType": "",
+      "balance": 0,
+      "monthlyPayment": 0,
+      "annualPayment": 0,
+      "note": ""
+    }
+  ],
+  "trustStructures": [
+    {
+      "trustName": "",
+      "trustType": "revocable",
+      "liquidAssets": 0,
+      "borrowerHasAccess": false,
+      "note": ""
+    }
+  ],
   "existingAnnualDebtService": 0,
   "monthlyLivingExpenses": 0,
   "registration": "",
@@ -403,12 +438,20 @@ Return ONLY a JSON object with exactly this structure:
 
 Rules:
 - qualifyingIncome = sum of all qualifying K-1 Box 1 income from the LOWER year + wages lower year + interest + dividends
+- agi = Adjusted Gross Income from Form 1040 Line 11 for the governing year
+- federalTaxesPaid = total federal income taxes paid in cash for the governing year (estimated payments + withholding minus any refund received)
+- k1Detail.entityType = legal entity type: "LLC", "S-Corp", "Partnership", "C-Corp", or other as stated
+- k1Detail.ownershipPct = borrower's ownership percentage in the entity (0-100)
+- k1Detail.year1Distributions / year2Distributions = actual cash distributions received from K-1 Schedule M-2 or Box 19/16D
+- liquidDetail = one entry per account from personal financial statement or brokerage statements; marginLoanBalance is the outstanding loan against that account
+- debtDetail = one entry per creditor/loan found anywhere in the documents (mortgages, auto, student, personal loans, LOCs, margin loans)
+- trustStructures = any trust entity mentioned; borrowerHasAccess=true if borrower is trustee or has discretionary withdrawal rights
 - Exclude LP passive K-1s (set excluded: true, qualifyingIncome: 0)
 - Do NOT add back depreciation or Section 179
 - netLiquidAssets = totalLiquidAssets - marginLoans - pledgedAmounts - locBalance
 - existingAnnualDebtService = sum of all recurring debt payments visible in statements (mortgages, loans, LOCs) annualized
 - netWorth = totalAssets - totalLiabilities
-- Use 0 for any field not found in the documents"""
+- Use 0 for any numeric field not found in the documents; use [] for arrays with no data found"""
 
 
 

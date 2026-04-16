@@ -855,14 +855,21 @@ def run_analysis(submission: dict) -> dict:
         })
 
     # ── Build income normalization block ──────────────────────────────────────
-    k1_detail = []
-    if k1_entities >= 1 and not has_w2:
-        k1_detail.append({
+    # Prefer extracted k1Detail from document parsing if present
+    k1_detail = financial.get("k1Detail") or []
+    if not k1_detail and k1_entities >= 1 and not has_w2:
+        k1_detail = [{
             "entityName": f"{last_name} Holdings LLC",
+            "entityType": "LLC",
+            "ownershipPct": 100,
             "participationType": "active",
             "year1Box1": qualifying_income,
             "year2Box1": qualifying_income,
-        })
+            "year1Distributions": 0,
+            "year2Distributions": 0,
+            "qualifyingIncome": qualifying_income,
+            "excluded": False,
+        }]
 
         # Pull corporate-specific fields from financial summary if available
     ebitda_data = financial.get("ebitda", {}) or {} if is_corporate else {}
@@ -887,6 +894,8 @@ def run_analysis(submission: dict) -> dict:
         "note": ("Corporate deal — EBITDA basis. Entity: " + borrower_name) if is_corporate else "Income based on borrower-reported recurring sources. Full tax return analysis required before final underwriting.",
         "k1Detail": k1_detail,
         "w2Detail": [{"employer": "Primary Employment", "year1": qualifying_income, "year2": qualifying_income}] if has_w2 else [],
+        "interestIncome": _parse_num(financial.get("interestIncome", 0)),
+        "dividendIncome": _parse_num(financial.get("dividendIncome", 0)),
         "portfolioIncome": {},
         "capitalGains": {},
         # Corporate-specific fields
@@ -1028,6 +1037,15 @@ def run_analysis(submission: dict) -> dict:
         "flags": flags,
         "guarantors": guarantors,
         "lenderRouting": lender_routing,
+        # New HNW raw-data fields — passed through from extraction/submission
+        "agi": _parse_num(financial.get("agi", 0)) if not is_corporate else 0,
+        "federalTaxesPaid": _parse_num(financial.get("federalTaxesPaid", 0)) if not is_corporate else 0,
+        "debtDetail": financial.get("debtDetail", []) if not is_corporate else [],
+        "trustStructures": financial.get("trustStructures", []) if not is_corporate else [],
     }
+
+    # Attach liquidDetail to balanceSheet if present in financial submission
+    if not is_corporate and financial.get("liquidDetail"):
+        analysis["balanceSheet"]["liquidDetail"] = financial["liquidDetail"]
 
     return analysis

@@ -270,6 +270,8 @@ CALLOWAY_DEMO = {
             "newLoanDebtService": 1346864,
             "existingDebtService": 836858,
         },
+        "agi": 4312400,
+        "federalTaxesPaid": 1338100,
         "incomeNormalization": {
             "taxYears": [2023, 2024],
             "qualifyingYear": 2023,
@@ -286,16 +288,27 @@ CALLOWAY_DEMO = {
             "taxesPaidLowerYear": 1338100,
             "note": "2023 governs (lower year). LP passive excluded. Real estate net of depreciation.",
             "k1Detail": [
-                {"entityName": "Calloway Industrial Group, LLC", "participationType": "Member-Manager", "year1Box1": 2850000, "year2Box1": 3120000, "qualifyingIncome": 2850000, "excluded": False},
-                {"entityName": "CIG Holdings II, LLC", "participationType": "Member-Manager", "year1Box1": 480000, "year2Box1": 510000, "qualifyingIncome": 480000, "excluded": False},
-                {"entityName": "CRW Real Estate Partners I, LLC", "participationType": "Managing Member", "year1Box1": 122200, "year2Box1": 132400, "qualifyingIncome": 122200, "excluded": False, "note": "Net after depreciation"},
-                {"entityName": "CRW Real Estate Partners II, LLC", "participationType": "Managing Member", "year1Box1": 76400, "year2Box1": 87900, "qualifyingIncome": 76400, "excluded": False, "note": "Net after depreciation"},
-                {"entityName": "Vantage Point Capital Partners, LLC", "participationType": "Limited Partner", "year1Box1": 185000, "year2Box1": 210000, "qualifyingIncome": 0, "excluded": True, "note": "LP passive — excluded per methodology"},
+                {"entityName": "Calloway Industrial Group, LLC", "entityType": "LLC", "ownershipPct": 100, "participationType": "Member-Manager", "year1Box1": 2850000, "year2Box1": 3120000, "year1Distributions": 2400000, "year2Distributions": 2600000, "qualifyingIncome": 2850000, "excluded": False},
+                {"entityName": "CIG Holdings II, LLC", "entityType": "LLC", "ownershipPct": 85, "participationType": "Member-Manager", "year1Box1": 480000, "year2Box1": 510000, "year1Distributions": 420000, "year2Distributions": 450000, "qualifyingIncome": 480000, "excluded": False},
+                {"entityName": "CRW Real Estate Partners I, LLC", "entityType": "LLC", "ownershipPct": 60, "participationType": "Managing Member", "year1Box1": 122200, "year2Box1": 132400, "year1Distributions": 95000, "year2Distributions": 105000, "qualifyingIncome": 122200, "excluded": False, "note": "Net after depreciation"},
+                {"entityName": "CRW Real Estate Partners II, LLC", "entityType": "LLC", "ownershipPct": 60, "participationType": "Managing Member", "year1Box1": 76400, "year2Box1": 87900, "year1Distributions": 60000, "year2Distributions": 72000, "qualifyingIncome": 76400, "excluded": False, "note": "Net after depreciation"},
+                {"entityName": "Vantage Point Capital Partners, LLC", "entityType": "Partnership", "ownershipPct": 12, "participationType": "Limited Partner", "year1Box1": 185000, "year2Box1": 210000, "year1Distributions": 0, "year2Distributions": 0, "qualifyingIncome": 0, "excluded": True, "note": "LP passive — excluded per methodology"},
             ],
             "interestIncome": 187400,
             "dividendIncome": 124600,
             "otherIncome": 95000,
         },
+        "debtDetail": [
+            {"creditor": "First Horizon Bank", "accountType": "Primary Residence Mortgage", "balance": 4250000, "monthlyPayment": 28400, "annualPayment": 340800, "note": ""},
+            {"creditor": "First Horizon Bank", "accountType": "Vacation Home Mortgage", "balance": 2820000, "monthlyPayment": 18800, "annualPayment": 225600, "note": "Vail, CO property"},
+            {"creditor": "Morgan Stanley PWM", "accountType": "Private LOC (Secured)", "balance": 2500000, "monthlyPayment": 10938, "annualPayment": 131250, "note": "Secured by brokerage account; $5M limit"},
+            {"creditor": "Morgan Stanley PWM", "accountType": "Margin Loan", "balance": 1850000, "monthlyPayment": 8167, "annualPayment": 98008, "note": "Against Individual Brokerage account"},
+            {"creditor": "First Horizon Bank", "accountType": "Commercial RE Loan", "balance": 650000, "monthlyPayment": 5100, "annualPayment": 61200, "note": "CRW Real Estate Partners I — guaranteed by borrower"},
+        ],
+        "trustStructures": [
+            {"trustName": "James R. Calloway Revocable Trust", "trustType": "revocable", "liquidAssets": 3200000, "borrowerHasAccess": True, "note": "Borrower is sole trustee; assets include brokerage and cash. Counted in liquid asset total."},
+            {"trustName": "Calloway Family Irrevocable Trust (2019)", "trustType": "irrevocable", "liquidAssets": 1450000, "borrowerHasAccess": False, "note": "Spouse is trustee; borrower has no withdrawal rights. Excluded from liquid asset analysis."},
+        ],
         "balanceSheet": {
             "totalAssets": 47798842,
             "grossTotalAssets": 47798842,
@@ -368,14 +381,10 @@ CALLOWAY_DEMO = {
 
 
 def seed_calloway():
-    """Ensure Calloway demo deal exists in the database. Safe to call on every startup."""
+    """Seed or refresh the Calloway demo deal on every startup."""
     try:
-        existing = load_deal(CALLOWAY_DEAL_ID)
-        if existing:
-            print(f"[deals_store] Calloway demo already exists")
-            return
-        save_deal(CALLOWAY_DEMO)
-        print(f"[deals_store] Calloway demo seeded: {CALLOWAY_DEAL_ID}")
+        save_deal(dict(CALLOWAY_DEMO))
+        print(f"[deals_store] Calloway demo seeded/refreshed: {CALLOWAY_DEAL_ID}")
     except Exception as e:
         print(f"[deals_store] Calloway seed error: {e}")
 
