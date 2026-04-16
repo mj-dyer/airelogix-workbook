@@ -214,6 +214,45 @@ def _build_research_prompt(
     return "\n".join(lines)
 
 
+def _extract_json(text: str) -> Optional[dict]:
+    """
+    Try progressively looser strategies to extract a JSON object from Claude's response.
+    Returns parsed dict or None.
+    """
+    # 1. Strip markdown code fences then try direct parse
+    cleaned = re.sub(r"```[a-z]*\n?", "", text).replace("```", "").strip()
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+
+    # 2. Find the outermost { ... } span and parse that
+    start = text.find("{")
+    if start != -1:
+        depth = 0
+        for i, ch in enumerate(text[start:], start):
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(text[start:i+1])
+                    except json.JSONDecodeError:
+                        break
+
+    # 3. Try json.loads on each line (sometimes Claude emits one-liner JSON)
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                return json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+    return None
+
+
 async def _run_research_loop(prompt: str) -> Optional[dict]:
     """
     Agentic Claude loop: call API, execute fetch_url tool calls, repeat until done.
@@ -261,12 +300,11 @@ async def _run_research_loop(prompt: str) -> Optional[dict]:
                 for block in content:
                     if block.get("type") == "text":
                         text = block["text"].strip()
-                        text = re.sub(r"```[a-z]*", "", text).replace("```", "").strip()
-                        try:
-                            return json.loads(text)
-                        except json.JSONDecodeError as e:
-                            print(f"[bio_engine] JSON parse error: {e} — raw: {text[:400]}")
-                            return None
+                        result = _extract_json(text)
+                        if result is not None:
+                            return result
+                        print(f"[bio_engine] JSON parse failed — full response:\n{text}")
+                        return None
                 return None
 
             if stop_reason == "tool_use":

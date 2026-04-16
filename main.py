@@ -144,6 +144,8 @@ def submit_deal(submission: DealSubmission, background_tasks: BackgroundTasks):
             "criticalFlags": len([f for f in analysis["flags"] if f.get("severity") == "CRITICAL"]),
             "analysis": analysis,
             "transactionType": data.get("transactionType", "purchase"),
+            "borrowerType": data.get("borrowerType", "individual"),
+            "profile": data.get("profile", {}),
         }
 
         save_deal(deal)
@@ -262,6 +264,20 @@ def get_iois(deal_id: str):
         raise HTTPException(status_code=404, detail=f"Deal {deal_id} not found")
     iois = load_iois(deal_id)
     return {"dealId": deal_id, "iois": iois, "count": len(iois)}
+
+
+@app.post("/admin/generate-bio/{deal_id}")
+async def admin_generate_bio(deal_id: str, background_tasks: BackgroundTasks):
+    """Re-trigger borrower bio research for an existing deal. Useful for debugging and demo deals."""
+    deal = load_deal(deal_id)
+    if not deal:
+        raise HTTPException(status_code=404, detail=f"Deal {deal_id} not found")
+    analysis = deal.get("analysis", {})
+    borrower_name = analysis.get("borrowerName", "Unknown")
+    borrower_type = deal.get("borrowerType", "individual")
+    profile_data = deal.get("profile", {})
+    background_tasks.add_task(generate_bio, deal_id, borrower_name, borrower_type, profile_data, analysis)
+    return {"status": "queued", "dealId": deal_id, "borrowerName": borrower_name}
 
 
 def _anon_id(deal_id: str) -> str:
