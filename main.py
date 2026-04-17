@@ -286,32 +286,92 @@ async def admin_debug_bio(deal_id: str):
     Run bio research synchronously and return the raw result for debugging.
     Does NOT save to the deal record — diagnostic only.
     """
-    from bio_engine import _build_research_prompt, _run_research_loop
     import os
+    import httpx as _httpx
+    from bio_engine import _build_research_prompt, ANTHROPIC_API_KEY, ANTHROPIC_URL, BIO_MODEL, FETCH_URL_TOOL, _extract_json
 
     deal = load_deal(deal_id)
     if not deal:
         raise HTTPException(status_code=404, detail=f"Deal {deal_id} not found")
 
-    api_key_set = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    if not ANTHROPIC_API_KEY:
+        return {"error": "ANTHROPIC_API_KEY not set", "dealId": deal_id}
+
     analysis = deal.get("analysis", {})
     borrower_name = analysis.get("borrowerName", "Unknown")
     borrower_type = deal.get("borrowerType", "individual")
     profile_data = deal.get("profile", {})
 
-    if not api_key_set:
-        return {"error": "ANTHROPIC_API_KEY not set", "dealId": deal_id}
+    # Step 1: Quick API connectivity test
+    try:
+        async with _httpx.AsyncClient(timeout=30.0) as client:
+            test_resp = await client.post(
+                ANTHROPIC_URL,
+                headers={
+                    "x-api-key": ANTHROPIC_API_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": BIO_MODEL,
+                    "max_tokens": 50,
+                    "messages": [{"role": "user", "content": "Reply with just: OK"}],
+                },
+            )
+            api_status = test_resp.status_code
+            api_snippet = test_resp.text[:300]
+    except Exception as e:
+        return {"error": f"Claude API connectivity failed: {e}", "dealId": deal_id}
 
+    if api_status != 200:
+        return {
+            "error": f"Claude API returned {api_status}",
+            "apiResponse": api_snippet,
+            "dealId": deal_id,
+        }
+
+    # Step 2: Single-turn call — ask for JSON with minimal research context
     prompt = _build_research_prompt(borrower_name, borrower_type, profile_data, analysis)
-    result = await _run_research_loop(prompt)
+    prompt_preview = prompt[:500]
+
+    try:
+        async with _httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(
+                ANTHROPIC_URL,
+                headers={
+                    "x-api-key": ANTHROPIC_API_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": BIO_MODEL,
+                    "max_tokens": 4000,
+                    "tools": [FETCH_URL_TOOL],
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+            )
+            resp_status = resp.status_code
+            resp_data = resp.json() if resp_status == 200 else None
+            resp_snippet = resp.text[:500] if resp_status != 200 else None
+    except Exception as e:
+        return {"error": f"Bio prompt call failed: {e}", "dealId": deal_id}
+
+    stop_reason = resp_data.get("stop_reason") if resp_data else None
+    content_types = [b.get("type") for b in resp_data.get("content", [])] if resp_data else []
+    first_text = next((b.get("text","")[:800] for b in (resp_data or {}).get("content",[]) if b.get("type")=="text"), None)
 
     return {
         "dealId": deal_id,
         "borrowerName": borrower_name,
         "borrowerType": borrower_type,
         "profileDataKeys": list(profile_data.keys()),
-        "result": result,
-        "success": result is not None,
+        "apiConnectivity": "ok",
+        "firstTurnStatus": resp_status,
+        "firstTurnStopReason": stop_reason,
+        "firstTurnContentTypes": content_types,
+        "firstTurnTextPreview": first_text,
+        "errorSnippet": resp_snippet,
+        "promptPreview": prompt_preview,
     }
 
 
