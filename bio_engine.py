@@ -375,15 +375,18 @@ async def _run_research_loop(prompt: str) -> Optional[dict]:
 
     print(f"[bio_engine] Loop ended after {turn} turns / {tool_call_count} tool calls — attempting forced finalization")
 
-    # One final call with tool use disabled — force Claude to synthesize from what it has
-    messages.append({
-        "role": "user",
-        "content": (
-            "Research budget exhausted. Do not use any tools. "
-            "Using only the information gathered above (and the application data if nothing was found), "
-            "produce the final JSON output now. No preamble — output ONLY the JSON block."
-        ),
-    })
+    # Fresh single-turn call with no tools — Claude must synthesize from training knowledge
+    # plus whatever it gleaned from the research prompt context.
+    finalize_prompt = (
+        prompt
+        + "\n\n═══════════════════════════════════════════\n"
+        + "FINALIZE NOW\n"
+        + "═══════════════════════════════════════════\n\n"
+        + "You have completed your research. Without using any tools, produce the final "
+        + "JSON output now based on any information you found and your knowledge of this "
+        + "borrower. If limited information was available, set researchQuality to 'low'. "
+        + "Output ONLY the JSON block — no preamble, no explanation."
+    )
     try:
         async with httpx.AsyncClient(timeout=60.0) as final_client:
             final_resp = await final_client.post(
@@ -396,7 +399,7 @@ async def _run_research_loop(prompt: str) -> Optional[dict]:
                 json={
                     "model": BIO_MODEL,
                     "max_tokens": 4000,
-                    "messages": messages,  # No tools — forces text response
+                    "messages": [{"role": "user", "content": finalize_prompt}],
                 },
             )
             if final_resp.status_code == 200:
@@ -407,9 +410,9 @@ async def _run_research_loop(prompt: str) -> Optional[dict]:
                         if result is not None:
                             print(f"[bio_engine] Forced finalization succeeded  quality={result.get('researchQuality')}")
                             return result
-                print(f"[bio_engine] Forced finalization: no parseable JSON in response")
+                print(f"[bio_engine] Forced finalization: no parseable JSON — raw: {str(final_data.get('content',''))[:400]}")
             else:
-                print(f"[bio_engine] Forced finalization: API error {final_resp.status_code}")
+                print(f"[bio_engine] Forced finalization: API error {final_resp.status_code}: {final_resp.text[:300]}")
     except Exception as e:
         print(f"[bio_engine] Forced finalization exception: {e}")
 
