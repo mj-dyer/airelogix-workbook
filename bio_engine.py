@@ -378,11 +378,10 @@ async def _run_research_loop(prompt: str) -> Optional[dict]:
                     tool_results.append({
                         "type": "text",
                         "text": (
-                            "You have used most of your research budget. "
-                            "Do NOT call fetch_url again. "
-                            "Synthesize everything you have gathered so far and produce the final JSON output now. "
-                            "If information was limited, set researchQuality to 'low' or 'medium' and write the "
-                            "narrative from what you know."
+                            "Research budget nearly exhausted. Do NOT call fetch_url again. "
+                            "Produce the complete final JSON output NOW using everything gathered. "
+                            'Required fields: narrative, industrySector, locationHint, sources, newsItems, verificationFlags, researchQuality, researchNote. '
+                            "Set researchQuality to 'low' if limited info found. Output ONLY the JSON block."
                         ),
                     })
 
@@ -416,10 +415,19 @@ async def _run_research_loop(prompt: str) -> Optional[dict]:
         + "\n\n═══════════════════════════════════════════\n"
         + "FINALIZE NOW\n"
         + "═══════════════════════════════════════════\n\n"
-        + "You have completed your research. Without using any tools, produce the final "
-        + "JSON output now based on any information you found and your knowledge of this "
-        + "borrower. If limited information was available, set researchQuality to 'low'. "
-        + "Output ONLY the JSON block — no preamble, no explanation."
+        + "You have completed your research. Without using any tools, produce the complete final\n"
+        + "JSON output now. Use all information gathered plus your general knowledge of this borrower.\n"
+        + "If limited information was available, set researchQuality to 'low'.\n\n"
+        + "Output ONLY this exact JSON structure — every field is required:\n\n"
+        + '{"narrative":"2-3 paragraphs professional bio",'
+        + '"industrySector":"one phrase e.g. Industrial Distribution",'
+        + '"locationHint":"US state only e.g. Ohio or empty string",'
+        + '"sources":[{"url":"...","title":"...","relevance":"..."}],'
+        + '"newsItems":[{"headline":"...","date":"YYYY-MM","url":"...","summary":"..."}],'
+        + '"verificationFlags":[{"field":"...","stated":"...","found":"...","severity":"INFO|WATCH|CRITICAL"}],'
+        + '"researchQuality":"high|medium|low",'
+        + '"researchNote":"one sentence"}'
+        + "\n\nNo preamble. No explanation. Output ONLY the JSON."
     )
     try:
         async with httpx.AsyncClient(timeout=60.0) as final_client:
