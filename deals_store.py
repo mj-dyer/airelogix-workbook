@@ -398,6 +398,26 @@ CALLOWAY_DEMO = {
             "rationale": "Very Strong credit — ORR 2 qualifies for all eight lender relationships. Preferred distribution to top three given strong GDSCR (2.53x) and net worth coverage (3.65x).",
         },
     },
+    "borrowerProfile": {
+        "narrative": "James R. Calloway is the founder and managing member of Calloway Industrial Group, LLC, a Columbus, Ohio-based industrial distribution and logistics company established in 2004. Mr. Calloway built the business from a regional fastener distributor into a multi-state industrial supply operation serving automotive and heavy manufacturing sectors across the Midwest. He holds a B.S. in Mechanical Engineering from Ohio State University and an MBA from the Fisher College of Business. Calloway Industrial Group reported approximately $22 million in revenue for the most recent fiscal year, with operations across Ohio, Michigan, and Indiana. The company maintains long-term supply agreements with several Tier 1 automotive suppliers and has achieved consistent year-over-year revenue growth averaging 8% over the past five years. Mr. Calloway holds full member-manager control of the entity and serves on the board of the Ohio Industrial Distributors Association. He is also a principal in CIG Holdings II LLC, a real estate holding entity focused on light industrial and flex commercial properties.\n\nMr. Calloway has been an active general aviation pilot since 2009 and currently holds an ATP certificate with multi-engine instrument ratings. He previously owned a Beechcraft King Air 350 for business travel before trading up to the Challenger 350. The proposed aircraft acquisition is consistent with his established pattern of business aircraft ownership and will be primarily used for travel between the company's Midwest facilities and supplier visits. No adverse litigation, bankruptcy, or regulatory history was identified in public records. The borrower maintains a low public profile consistent with a privately-held mid-market business owner.",
+        "sources": [
+            {"url": "https://www.callowayindustrial.com", "title": "Calloway Industrial Group — Company Website", "relevance": "Confirmed business operations, founding year, sector focus, and management team"},
+            {"url": "https://www.bizjournals.com/columbus/news/2022/03/calloway-industrial-expansion", "title": "Columbus Business First: Calloway Industrial Expands into Michigan", "relevance": "Revenue growth trajectory and geographic expansion corroborated"},
+            {"url": "https://www.ohioindustrialdist.org/board", "title": "OIDA Board of Directors", "relevance": "Confirmed board membership — Ohio Industrial Distributors Association"},
+        ],
+        "newsItems": [
+            {"headline": "Calloway Industrial Group Opens Pontiac Distribution Center", "date": "2022-03", "url": "https://www.bizjournals.com/columbus/news/2022/03/calloway-industrial-expansion", "summary": "Company expanded into Michigan market with a 120,000 sq ft distribution facility, adding 45 jobs."},
+            {"headline": "OIDA Names New Board Members for 2023–2025 Term", "date": "2023-01", "url": "https://www.ohioindustrialdist.org/news/board-2023", "summary": "James Calloway appointed to the Ohio Industrial Distributors Association board alongside five other regional operators."},
+        ],
+        "verificationFlags": [
+            {"field": "Revenue Scale", "stated": "Not stated — inferred from K-1 distributions ($2.4M–$2.6M)", "found": "~$22M annual revenue per press coverage; implied owner economics consistent with stated K-1 income", "severity": "INFO"},
+        ],
+        "researchQuality": "medium",
+        "researchNote": "Company website, local business press, and trade association records confirm borrower background. No adverse findings. Revenue figure inferred from news coverage.",
+        "generatedAt": "2026-04-01T12:00:00+00:00",
+        "dealId": "DEMO-CALLOWAY-2024",
+        "borrowerName": "James R. Calloway",
+    },
 }
 
 
