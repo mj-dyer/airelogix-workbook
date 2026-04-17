@@ -341,6 +341,20 @@ async def _run_research_loop(prompt: str) -> Optional[dict]:
                         "content": result_text,
                     })
 
+                # If we're at or near the tool call limit, tell Claude to wrap up now
+                if tool_call_count >= MAX_TOOL_CALLS - 1:
+                    print(f"[bio_engine] Approaching tool call limit ({tool_call_count}/{MAX_TOOL_CALLS}) — injecting finalize instruction")
+                    tool_results.append({
+                        "type": "text",
+                        "text": (
+                            "You have used most of your research budget. "
+                            "Do NOT call fetch_url again. "
+                            "Synthesize everything you have gathered so far and produce the final JSON output now. "
+                            "If information was limited, set researchQuality to 'low' or 'medium' and write the "
+                            "narrative from what you know."
+                        ),
+                    })
+
                 messages.append({"role": "user", "content": tool_results})
 
             elif stop_reason == "max_tokens":
@@ -359,7 +373,46 @@ async def _run_research_loop(prompt: str) -> Optional[dict]:
                 print(f"[bio_engine] Turn {turn}: unexpected stop_reason={stop_reason}")
                 break
 
-    print(f"[bio_engine] Loop ended after {turn} turns / {tool_call_count} tool calls without final answer")
+    print(f"[bio_engine] Loop ended after {turn} turns / {tool_call_count} tool calls — attempting forced finalization")
+
+    # One final call with tool use disabled — force Claude to synthesize from what it has
+    messages.append({
+        "role": "user",
+        "content": (
+            "Research budget exhausted. Do not use any tools. "
+            "Using only the information gathered above (and the application data if nothing was found), "
+            "produce the final JSON output now. No preamble — output ONLY the JSON block."
+        ),
+    })
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as final_client:
+            final_resp = await final_client.post(
+                ANTHROPIC_URL,
+                headers={
+                    "x-api-key": ANTHROPIC_API_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": BIO_MODEL,
+                    "max_tokens": 4000,
+                    "messages": messages,  # No tools — forces text response
+                },
+            )
+            if final_resp.status_code == 200:
+                final_data = final_resp.json()
+                for block in final_data.get("content", []):
+                    if block.get("type") == "text":
+                        result = _extract_json(block["text"])
+                        if result is not None:
+                            print(f"[bio_engine] Forced finalization succeeded  quality={result.get('researchQuality')}")
+                            return result
+                print(f"[bio_engine] Forced finalization: no parseable JSON in response")
+            else:
+                print(f"[bio_engine] Forced finalization: API error {final_resp.status_code}")
+    except Exception as e:
+        print(f"[bio_engine] Forced finalization exception: {e}")
+
     return None
 
 
