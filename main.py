@@ -146,6 +146,7 @@ def submit_deal(submission: DealSubmission, background_tasks: BackgroundTasks):
             "transactionType": data.get("transactionType", "purchase"),
             "borrowerType": data.get("borrowerType", "individual"),
             "profile": data.get("profile", {}),
+            "loanPrefs": data.get("loanPrefs", {}),
         }
 
         save_deal(deal)
