@@ -264,15 +264,19 @@ async def _run_research_loop(prompt: str) -> Optional[dict]:
 
     messages = [{"role": "user", "content": prompt}]
     tool_call_count = 0
+    turn = 0
 
     async with httpx.AsyncClient(timeout=120.0) as client:
         while tool_call_count <= MAX_TOOL_CALLS:
+            turn += 1
             payload = {
                 "model": BIO_MODEL,
                 "max_tokens": 4000,
                 "tools": [FETCH_URL_TOOL],
                 "messages": messages,
             }
+
+            print(f"[bio_engine] Turn {turn}: calling Claude (tool_calls_so_far={tool_call_count}, msg_count={len(messages)})")
 
             resp = await client.post(
                 ANTHROPIC_URL,
@@ -285,12 +289,14 @@ async def _run_research_loop(prompt: str) -> Optional[dict]:
             )
 
             if resp.status_code != 200:
-                print(f"[bio_engine] Claude API error {resp.status_code}: {resp.text[:300]}")
+                print(f"[bio_engine] Turn {turn}: Claude API error {resp.status_code}: {resp.text[:500]}")
                 return None
 
             data = resp.json()
             stop_reason = data.get("stop_reason")
             content = data.get("content", [])
+            content_types = [b.get("type") for b in content]
+            print(f"[bio_engine] Turn {turn}: stop_reason={stop_reason}  content_types={content_types}")
 
             # Append assistant turn
             messages.append({"role": "assistant", "content": content})
@@ -302,9 +308,11 @@ async def _run_research_loop(prompt: str) -> Optional[dict]:
                         text = block["text"].strip()
                         result = _extract_json(text)
                         if result is not None:
+                            print(f"[bio_engine] Turn {turn}: JSON parsed OK  quality={result.get('researchQuality')}")
                             return result
-                        print(f"[bio_engine] JSON parse failed — full response:\n{text}")
+                        print(f"[bio_engine] Turn {turn}: JSON parse failed — full response:\n{text}")
                         return None
+                print(f"[bio_engine] Turn {turn}: end_turn but no text block in content")
                 return None
 
             if stop_reason == "tool_use":
@@ -322,6 +330,8 @@ async def _run_research_loop(prompt: str) -> Optional[dict]:
                         purpose = tool_input.get("purpose", "")
                         print(f"[bio_engine] fetch_url ({tool_call_count}/{MAX_TOOL_CALLS}): {url[:80]} — {purpose}")
                         result_text = await _fetch_url(url)
+                        fetch_ok = not result_text.startswith("[Fetch failed")
+                        print(f"[bio_engine] fetch_url result: {'ok' if fetch_ok else 'FAILED'} ({len(result_text)} chars)")
                     else:
                         result_text = f"[Unknown tool: {tool_name}]"
 
@@ -333,11 +343,23 @@ async def _run_research_loop(prompt: str) -> Optional[dict]:
 
                 messages.append({"role": "user", "content": tool_results})
 
+            elif stop_reason == "max_tokens":
+                # Claude ran out of tokens mid-response — try to salvage any text block
+                print(f"[bio_engine] Turn {turn}: max_tokens hit — attempting to extract partial JSON")
+                for block in content:
+                    if block.get("type") == "text":
+                        text = block["text"].strip()
+                        result = _extract_json(text)
+                        if result is not None:
+                            return result
+                print(f"[bio_engine] Turn {turn}: max_tokens and no salvageable JSON")
+                return None
+
             else:
-                print(f"[bio_engine] Unexpected stop_reason: {stop_reason}")
+                print(f"[bio_engine] Turn {turn}: unexpected stop_reason={stop_reason}")
                 break
 
-    print(f"[bio_engine] Loop ended after {tool_call_count} tool calls without final answer")
+    print(f"[bio_engine] Loop ended after {turn} turns / {tool_call_count} tool calls without final answer")
     return None
 
 
