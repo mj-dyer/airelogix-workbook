@@ -253,12 +253,20 @@ def _extract_json(text: str) -> Optional[dict]:
     return None
 
 
+_last_fail_reason = "unknown"
+
+
 async def _run_research_loop(prompt: str) -> Optional[dict]:
     """
     Agentic Claude loop: call API, execute fetch_url tool calls, repeat until done.
     Returns parsed JSON result dict, or None on failure.
+    Sets module-level _last_fail_reason on failure for diagnostic purposes.
     """
+    global _last_fail_reason
+    _last_fail_reason = "loop_not_started"
+
     if not ANTHROPIC_API_KEY:
+        _last_fail_reason = "no_api_key"
         print("[bio_engine] No ANTHROPIC_API_KEY — skipping research")
         return None
 
@@ -289,6 +297,7 @@ async def _run_research_loop(prompt: str) -> Optional[dict]:
             )
 
             if resp.status_code != 200:
+                _last_fail_reason = f"api_error_{resp.status_code}_turn{turn}"
                 print(f"[bio_engine] Turn {turn}: Claude API error {resp.status_code}: {resp.text[:500]}")
                 return None
 
@@ -308,10 +317,13 @@ async def _run_research_loop(prompt: str) -> Optional[dict]:
                         text = block["text"].strip()
                         result = _extract_json(text)
                         if result is not None:
+                            _last_fail_reason = "success"
                             print(f"[bio_engine] Turn {turn}: JSON parsed OK  quality={result.get('researchQuality')}")
                             return result
+                        _last_fail_reason = f"json_parse_fail_turn{turn}"
                         print(f"[bio_engine] Turn {turn}: JSON parse failed — full response:\n{text}")
                         return None
+                _last_fail_reason = f"end_turn_no_text_turn{turn}"
                 print(f"[bio_engine] Turn {turn}: end_turn but no text block in content")
                 return None
 
@@ -365,11 +377,14 @@ async def _run_research_loop(prompt: str) -> Optional[dict]:
                         text = block["text"].strip()
                         result = _extract_json(text)
                         if result is not None:
+                            _last_fail_reason = "success_from_max_tokens"
                             return result
+                _last_fail_reason = f"max_tokens_no_json_turn{turn}"
                 print(f"[bio_engine] Turn {turn}: max_tokens and no salvageable JSON")
                 return None
 
             else:
+                _last_fail_reason = f"unexpected_stop_{stop_reason}_turn{turn}"
                 print(f"[bio_engine] Turn {turn}: unexpected stop_reason={stop_reason}")
                 break
 
@@ -410,10 +425,13 @@ async def _run_research_loop(prompt: str) -> Optional[dict]:
                         if result is not None:
                             print(f"[bio_engine] Forced finalization succeeded  quality={result.get('researchQuality')}")
                             return result
+                _last_fail_reason = "finalize_no_parseable_json"
                 print(f"[bio_engine] Forced finalization: no parseable JSON — raw: {str(final_data.get('content',''))[:400]}")
             else:
+                _last_fail_reason = f"finalize_api_error_{final_resp.status_code}"
                 print(f"[bio_engine] Forced finalization: API error {final_resp.status_code}: {final_resp.text[:300]}")
     except Exception as e:
+        _last_fail_reason = f"finalize_exception_{type(e).__name__}"
         print(f"[bio_engine] Forced finalization exception: {e}")
 
     return None
@@ -439,6 +457,8 @@ async def generate_bio(
         prompt = _build_research_prompt(borrower_name, deal_type, profile_data, analysis)
         result = await _run_research_loop(prompt)
 
+        from bio_engine import _last_fail_reason as _diag
+
         if result:
             borrower_profile = {
                 **result,
@@ -454,10 +474,11 @@ async def generate_bio(
                 "newsItems": [],
                 "verificationFlags": [],
                 "researchQuality": "failed",
-                "researchNote": "Profile generation failed — no data retrieved.",
+                "researchNote": f"Profile generation failed — no data retrieved. Reason: {_diag}",
                 "generatedAt": datetime.now(timezone.utc).isoformat(),
                 "dealId": deal_id,
                 "borrowerName": borrower_name,
+                "_failReason": _diag,
             }
             quality = "failed"
 
