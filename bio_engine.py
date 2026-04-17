@@ -13,8 +13,8 @@ from typing import Optional
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 BIO_MODEL = "claude-sonnet-4-20250514"
-MAX_TOOL_CALLS = 12
-MAX_PAGE_CHARS = 8000  # Truncate fetched pages to avoid token overflow
+MAX_TOOL_CALLS = 8
+MAX_PAGE_CHARS = 5000  # Truncate fetched pages to avoid token overflow and rate limits
 
 FETCH_URL_TOOL = {
     "name": "fetch_url",
@@ -295,6 +295,19 @@ async def _run_research_loop(prompt: str) -> Optional[dict]:
                 },
                 json=payload,
             )
+
+            if resp.status_code == 429:
+                # Rate limited — parse retry-after header or use exponential backoff
+                import asyncio
+                retry_after = resp.headers.get("retry-after") or resp.headers.get("x-ratelimit-reset-requests")
+                wait_secs = 30
+                try:
+                    wait_secs = max(10, int(float(retry_after))) if retry_after else 30
+                except (TypeError, ValueError):
+                    wait_secs = 30
+                print(f"[bio_engine] Turn {turn}: rate limited (429) — waiting {wait_secs}s before retry")
+                await asyncio.sleep(wait_secs)
+                continue  # retry same turn
 
             if resp.status_code != 200:
                 _last_fail_reason = f"api_error_{resp.status_code}_turn{turn}"
