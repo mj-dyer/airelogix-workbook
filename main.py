@@ -280,6 +280,41 @@ async def admin_generate_bio(deal_id: str, background_tasks: BackgroundTasks):
     return {"status": "queued", "dealId": deal_id, "borrowerName": borrower_name}
 
 
+@app.post("/admin/debug-bio/{deal_id}")
+async def admin_debug_bio(deal_id: str):
+    """
+    Run bio research synchronously and return the raw result for debugging.
+    Does NOT save to the deal record — diagnostic only.
+    """
+    from bio_engine import _build_research_prompt, _run_research_loop
+    import os
+
+    deal = load_deal(deal_id)
+    if not deal:
+        raise HTTPException(status_code=404, detail=f"Deal {deal_id} not found")
+
+    api_key_set = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    analysis = deal.get("analysis", {})
+    borrower_name = analysis.get("borrowerName", "Unknown")
+    borrower_type = deal.get("borrowerType", "individual")
+    profile_data = deal.get("profile", {})
+
+    if not api_key_set:
+        return {"error": "ANTHROPIC_API_KEY not set", "dealId": deal_id}
+
+    prompt = _build_research_prompt(borrower_name, borrower_type, profile_data, analysis)
+    result = await _run_research_loop(prompt)
+
+    return {
+        "dealId": deal_id,
+        "borrowerName": borrower_name,
+        "borrowerType": borrower_type,
+        "profileDataKeys": list(profile_data.keys()),
+        "result": result,
+        "success": result is not None,
+    }
+
+
 def _anon_id(deal_id: str) -> str:
     parts = deal_id.split("-")
     if len(parts) >= 3:
