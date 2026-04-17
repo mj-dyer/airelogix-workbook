@@ -412,6 +412,8 @@ CALLOWAY_DEMO = {
         "verificationFlags": [
             {"field": "Revenue Scale", "stated": "Not stated — inferred from K-1 distributions ($2.4M–$2.6M)", "found": "~$22M annual revenue per press coverage; implied owner economics consistent with stated K-1 income", "severity": "INFO"},
         ],
+        "industrySector": "Industrial Distribution & Logistics",
+        "locationHint": "Ohio",
         "researchQuality": "medium",
         "researchNote": "Company website, local business press, and trade association records confirm borrower background. No adverse findings. Revenue figure inferred from news coverage.",
         "generatedAt": "2026-04-01T12:00:00+00:00",
