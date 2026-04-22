@@ -702,14 +702,10 @@ def run_analysis(submission: dict) -> dict:
     if f4 >= 8:
         final_composite = 8.0
         floor_triggered = "Income score = 8 — hard decline"
-    elif f1 >= 5:
+    elif f1 >= 6:
         if pre_floor < f1:
             final_composite = f1
             floor_triggered = f"GDSCR floor — score {f1}"
-    elif f2 >= 5:
-        if pre_floor < f2:
-            final_composite = f2
-            floor_triggered = f"Liquidity floor — score {f2}"
     elif f5 >= 8:
         if pre_floor < 7:
             final_composite = 7.0
@@ -797,39 +793,45 @@ def run_analysis(submission: dict) -> dict:
         })
 
     # ── Lender routing ────────────────────────────────────────────────────────
+    # ── Lender pool — criteria are factual thresholds only, no derived scoring ──
+    # minGdscr: minimum debt coverage ratio (qualifying income / pro forma debt service)
+    # maxLtv:   maximum loan-to-FMV ratio
+    # maxAge:   maximum aircraft age at origination (years)
+    # minLoan / maxLoan: loan amount range in dollars
     all_lenders = [
-        {"name": "US Bank Aviation Finance",  "tier": "Tier 1 — National Bank",   "minLoan": 1000000,  "maxLoan": 25000000, "maxRating": "5+", "minAge": 0, "maxAge": 25},
-        {"name": "PNC Equipment Finance",     "tier": "Tier 1 — National Bank",   "minLoan": 1000000,  "maxLoan": 20000000, "maxRating": "5+", "minAge": 0, "maxAge": 22},
-        {"name": "Citizens Private Bank",     "tier": "Tier 1 — Private Bank",    "minLoan": 1000000,  "maxLoan": 30000000, "maxRating": "5",  "minAge": 0, "maxAge": 25},
-        {"name": "Fifth Third Leasing",       "tier": "Tier 2 — Regional Bank",   "minLoan": 500000,   "maxLoan": 15000000, "maxRating": "5-", "minAge": 0, "maxAge": 22},
-        {"name": "Truist Aviation Finance",   "tier": "Tier 2 — Regional Bank",   "minLoan": 500000,   "maxLoan": 15000000, "maxRating": "5-", "minAge": 0, "maxAge": 22},
-        {"name": "Scope Aircraft Finance",    "tier": "Tier 3 — Specialty",       "minLoan": 500000,   "maxLoan": 30000000, "maxRating": "6",  "minAge": 0, "maxAge": 28},
-        {"name": "Republic Bank",             "tier": "Tier 3 — Community Bank",  "minLoan": 250000,   "maxLoan": 10000000, "maxRating": "6",  "minAge": 0, "maxAge": 28},
-        {"name": "Deerwood Bank",             "tier": "Tier 3 — Community Bank",  "minLoan": 250000,   "maxLoan": 8000000,  "maxRating": "6",  "minAge": 0, "maxAge": 30},
+        {"name": "US Bank Aviation Finance", "minLoan": 5000000,  "maxLoan": 85000000, "minGdscr": 2.00, "maxLtv": 0.95, "maxAge": 25},
+        {"name": "PNC Equipment Finance",    "minLoan": 5000000,  "maxLoan": 85000000, "minGdscr": 2.00, "maxLtv": 0.95, "maxAge": 22},
+        {"name": "Citizens Private Bank",    "minLoan": 5000000,  "maxLoan": 70000000, "minGdscr": 1.75, "maxLtv": 0.95, "maxAge": 25},
+        {"name": "Fifth Third Leasing",      "minLoan": 3000000,  "maxLoan": 85000000, "minGdscr": 1.75, "maxLtv": 0.90, "maxAge": 22},
+        {"name": "Truist Aviation Finance",  "minLoan": 4000000,  "maxLoan": 70000000, "minGdscr": 1.75, "maxLtv": 0.90, "maxAge": 22},
+        {"name": "Scope Aircraft Finance",   "minLoan": 1000000,  "maxLoan": 50000000, "minGdscr": 1.35, "maxLtv": 0.90, "maxAge": 28},
+        {"name": "Republic Bank",            "minLoan": 1000000,  "maxLoan": 30000000, "minGdscr": 1.25, "maxLtv": 0.90, "maxAge": 28},
+        {"name": "Deerwood Bank",            "minLoan": 1000000,  "maxLoan": 30000000, "minGdscr": 1.20, "maxLtv": 0.90, "maxAge": 30},
     ]
 
-    rating_order = ["1", "1+", "2+", "2", "2-", "3+", "3", "3-", "4+", "4", "4-",
-                    "5+", "5", "5-", "6+", "6", "6-", "7", "8"]
-
-    def rating_ok(lender_max: str, deal_rating: str) -> bool:
-        try:
-            return rating_order.index(deal_rating) <= rating_order.index(lender_max)
-        except ValueError:
-            return False
+    # Premium override threshold: strong borrowers (GDSCR >= 2.5x) qualify for any
+    # lender whose loan maximum is met, even if below stated minimum. Reflects
+    # relationship value of a high-coverage borrower on a smaller deal.
+    PREMIUM_GDSCR = 2.50
 
     lender_routing = []
     for l in all_lenders:
-        loan_ok = l["minLoan"] <= loan_amount <= l["maxLoan"]
-        rate_ok = rating_ok(l["maxRating"], rating)
-        age_ok = aircraft_age <= l["maxAge"]
-        if loan_ok and rate_ok and age_ok:
-            lender_routing.append({"name": l["name"], "tier": l["tier"], "status": "ELIGIBLE", "notes": "Meets all standard criteria"})
-        else:
-            reason = []
-            if not loan_ok: reason.append(f"Loan amount outside range")
-            if not rate_ok: reason.append(f"Rating {rating} below appetite")
-            if not age_ok:  reason.append(f"Aircraft age {aircraft_age}yr exceeds limit")
-            lender_routing.append({"name": l["name"], "tier": l["tier"], "status": "; ".join(reason), "notes": ""})
+        ltv_ok   = ltv_vs_fmv <= l["maxLtv"]
+        age_ok   = aircraft_age <= l["maxAge"]
+        gdscr_ok = gdscr >= l["minGdscr"]
+        in_range = l["minLoan"] <= loan_amount <= l["maxLoan"]
+        under_max = loan_amount <= l["maxLoan"]
+
+        standard = in_range and ltv_ok and age_ok and gdscr_ok
+        premium  = (not standard) and (gdscr >= PREMIUM_GDSCR) and under_max and ltv_ok and age_ok
+
+        if standard or premium:
+            lender_routing.append({
+                "name":      l["name"],
+                "status":    "ELIGIBLE",
+                "matchType": "standard" if standard else "premium",
+                "notes":     "",
+            })
 
     # ── Guarantors ────────────────────────────────────────────────────────────
     guarantors = [
