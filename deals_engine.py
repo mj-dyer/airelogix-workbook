@@ -799,14 +799,28 @@ def run_analysis(submission: dict) -> dict:
     # maxAge:   maximum aircraft age at origination (years)
     # minLoan / maxLoan: loan amount range in dollars
     all_lenders = [
-        {"name": "US Bank Aviation Finance", "minLoan": 5000000,  "maxLoan": 85000000, "minGdscr": 2.00, "maxLtv": 0.95, "maxAge": 25},
-        {"name": "PNC Equipment Finance",    "minLoan": 5000000,  "maxLoan": 85000000, "minGdscr": 2.00, "maxLtv": 0.95, "maxAge": 22},
-        {"name": "Citizens Private Bank",    "minLoan": 5000000,  "maxLoan": 70000000, "minGdscr": 1.75, "maxLtv": 0.95, "maxAge": 25},
-        {"name": "Fifth Third Leasing",      "minLoan": 3000000,  "maxLoan": 85000000, "minGdscr": 1.75, "maxLtv": 0.90, "maxAge": 22},
-        {"name": "Truist Aviation Finance",  "minLoan": 4000000,  "maxLoan": 70000000, "minGdscr": 1.75, "maxLtv": 0.90, "maxAge": 22},
-        {"name": "Scope Aircraft Finance",   "minLoan": 1000000,  "maxLoan": 50000000, "minGdscr": 1.35, "maxLtv": 0.90, "maxAge": 28},
-        {"name": "Republic Bank",            "minLoan": 1000000,  "maxLoan": 30000000, "minGdscr": 1.25, "maxLtv": 0.90, "maxAge": 28},
-        {"name": "Deerwood Bank",            "minLoan": 1000000,  "maxLoan": 30000000, "minGdscr": 1.20, "maxLtv": 0.90, "maxAge": 30},
+        {"name": "US Bank Aviation Finance",         "minLoan": 5000000,  "maxLoan": 85000000, "minGdscr": 2.00, "maxLtv": 0.95, "maxAge": 25},
+        {"name": "PNC Equipment Finance",            "minLoan": 5000000,  "maxLoan": 85000000, "minGdscr": 2.00, "maxLtv": 0.95, "maxAge": 22},
+        {"name": "Citizens Private Bank",            "minLoan": 5000000,  "maxLoan": 70000000, "minGdscr": 1.75, "maxLtv": 0.95, "maxAge": 25},
+        {"name": "Fifth Third Leasing",              "minLoan": 3000000,  "maxLoan": 85000000, "minGdscr": 1.75, "maxLtv": 0.90, "maxAge": 22},
+        {"name": "Truist Aviation Finance",          "minLoan": 4000000,  "maxLoan": 70000000, "minGdscr": 1.75, "maxLtv": 0.90, "maxAge": 22},
+        {"name": "M&T Bank",                         "minLoan": 2000000,  "maxLoan": 80000000, "minGdscr": 1.75, "maxLtv": 0.90, "maxAge": 25},
+        {"name": "Bank OZK",                         "minLoan": 5000000,  "maxLoan": 50000000, "minGdscr": 1.75, "maxLtv": 0.90, "maxAge": 25},
+        {"name": "Commerce Bank",                    "minLoan": 5000000,  "maxLoan": 50000000, "minGdscr": 1.75, "maxLtv": 0.90, "maxAge": 25},
+        {"name": "First American Equipment Finance", "minLoan": 5000000,  "maxLoan": 50000000, "minGdscr": 1.75, "maxLtv": 0.90, "maxAge": 25},
+        {"name": "Huntington Bank",                  "minLoan": 2000000,  "maxLoan": 70000000, "minGdscr": 1.75, "maxLtv": 0.90, "maxAge": 25},
+        {"name": "EverBank",                         "minLoan": 5000000,  "maxLoan": 85000000, "minGdscr": 1.75, "maxLtv": 0.90, "maxAge": 25, "corporateOnly": True},
+        {"name": "Cogent Bank",                      "minLoan": 3000000,  "maxLoan": 25000000, "minGdscr": 1.50, "maxLtv": 0.90, "maxAge": 25},
+        {"name": "Enterprise Bank & Trust",          "minLoan": 2000000,  "maxLoan": 30000000, "minGdscr": 1.50, "maxLtv": 0.90, "maxAge": 25},
+        {"name": "MidFirst Bank",                    "minLoan": 2000000,  "maxLoan": 50000000, "minGdscr": 1.50, "maxLtv": 0.90, "maxAge": 25},
+        {"name": "Salem Five Bank",                  "minLoan": 3000000,  "maxLoan": 30000000, "minGdscr": 1.35, "maxLtv": 0.90, "maxAge": 25},
+        {"name": "Scope Aircraft Finance",           "minLoan": 1000000,  "maxLoan": 50000000, "minGdscr": 1.35, "maxLtv": 0.90, "maxAge": 28},
+        {"name": "1st Source Bank",                  "minLoan": 1000000,  "maxLoan": 30000000, "minGdscr": 1.25, "maxLtv": 0.90, "maxAge": 28},
+        {"name": "Arvest Equipment Finance",         "minLoan": 1000000,  "maxLoan": 20000000, "minGdscr": 1.25, "maxLtv": 0.90, "maxAge": 28},
+        {"name": "Celtic Bank",                      "minLoan": 1000000,  "maxLoan": 20000000, "minGdscr": 1.25, "maxLtv": 0.90, "maxAge": 28},
+        {"name": "Prism Bank",                       "minLoan": 1000000,  "maxLoan": 20000000, "minGdscr": 1.25, "maxLtv": 0.90, "maxAge": 28},
+        {"name": "Deerwood Bank",                    "minLoan": 1000000,  "maxLoan": 30000000, "minGdscr": 1.20, "maxLtv": 0.90, "maxAge": 30},
+        {"name": "Republic Bank",                    "minLoan": 1000000,  "maxLoan": 3000000,  "minGdscr": 1.20, "maxLtv": 0.90, "maxAge": 30},
     ]
 
     # Premium override threshold: strong borrowers (GDSCR >= 2.5x) qualify for any
@@ -816,10 +830,14 @@ def run_analysis(submission: dict) -> dict:
 
     lender_routing = []
     for l in all_lenders:
-        ltv_ok   = ltv_vs_fmv <= l["maxLtv"]
-        age_ok   = aircraft_age <= l["maxAge"]
-        gdscr_ok = gdscr >= l["minGdscr"]
-        in_range = l["minLoan"] <= loan_amount <= l["maxLoan"]
+        # Skip corporate-only lenders for individual/HNW deals
+        if l.get("corporateOnly") and not is_corporate:
+            continue
+
+        ltv_ok    = ltv_vs_fmv <= l["maxLtv"]
+        age_ok    = aircraft_age <= l["maxAge"]
+        gdscr_ok  = gdscr >= l["minGdscr"]
+        in_range  = l["minLoan"] <= loan_amount <= l["maxLoan"]
         under_max = loan_amount <= l["maxLoan"]
 
         standard = in_range and ltv_ok and age_ok and gdscr_ok
