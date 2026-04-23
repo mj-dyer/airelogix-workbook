@@ -116,7 +116,6 @@ def _tab_dashboard(wb, a):
     ws.sheet_properties.tabColor = "9A7A14"
 
     tx  = a.get("transaction", {})
-    rr  = a.get("riskRating", {})
     gd  = a.get("gdscr", {})
     bs  = a.get("balanceSheet", {})
     ac  = a.get("aircraft", {})
@@ -147,10 +146,6 @@ def _tab_dashboard(wb, a):
     _row(ws, r, "Borrower Name", a.get("borrowerName",""), "text", bold=True); r+=1
     _row(ws, r, "Application ID", a.get("applicationId",""), "text"); r+=1
     _row(ws, r, "Analysis Date", a.get("analysisDate",""), "text"); r+=1
-    _spacer(ws, r); r+=1
-    _row(ws, r, "AireLogix Risk Rating", str(rr.get("rating","")) + " — " + rr.get("band",""), "text", bold=True,
-         val_color=GREEN if str(rr.get("rating","")) in ["1","2","3"] else AMBER if str(rr.get("rating","")) in ["4","5","6"] else RED); r+=1
-    _row(ws, r, "Disposition", rr.get("disposition",""), "text"); r+=1
     _spacer(ws, r); r+=1
     _row(ws, r, "Pro Forma GDSCR", gd.get("gdscr",0), "x", bold=True,
          val_color=GREEN if gd.get("gdscr",0)>=1.75 else AMBER if gd.get("gdscr",0)>=1.25 else RED); r+=1
@@ -643,119 +638,7 @@ def _tab_collateral(wb, a):
 
 
 # ── TAB 8: Risk Rating ────────────────────────────────────────────────────────
-def _tab_risk_rating(wb, a):
-    ws = wb.create_sheet("Risk Rating")
-    ws.sheet_view.showGridLines = False
-    ws.sheet_properties.tabColor = "E8CC9A"
-    _setup_cols(ws, [36, 14, 14, 14, 22])
-
-    rr = a.get("riskRating", {})
-    fs = rr.get("factorScores", {})
-    comp = rr.get("composite", {})
-
-    r = 1
-    c = ws.cell(row=r, column=1, value="AIRELOGIX RISK RATING (ORR)")
-    c.font = _font(bold=True, color=GOLD, size=12)
-    c.fill = _fill(NAVY)
-    ws.merge_cells(f"A{r}:E{r}")
-    ws.row_dimensions[r].height = 26; r+=1
-    _spacer(ws, r); r+=1
-
-    rating = str(rr.get("rating",""))
-    band   = rr.get("band","")
-    rating_color = GREEN if rating in ["1","2","3"] else AMBER if rating in ["4","5","6"] else RED
-
-    # Rating badge
-    _header_row(ws, r, "FINAL RATING", 5); r+=1
-    c = ws.cell(row=r, column=1, value=f"ORR {rating} — {band}")
-    c.font = _font(bold=True, color=rating_color, size=14)
-    c.fill = _fill(LIGHT_BG)
-    ws.merge_cells(f"A{r}:B{r}")
-    ws.row_dimensions[r].height = 24
-
-    c2 = ws.cell(row=r, column=3, value=rr.get("disposition",""))
-    c2.font = _font(size=9, italic=True, color=STEEL)
-    c2.fill = _fill("FFFBF8F2")
-    ws.merge_cells(f"C{r}:E{r}")
-    r+=1
-    _spacer(ws, r); r+=1
-
-    # Factor scores
-    _header_row(ws, r, "FACTOR SCORE DETAIL", 5); r+=1
-    for col_i, h in enumerate(["Factor", "Score", "Weight", "Weighted", "Basis"], 1):
-        c = ws.cell(row=r, column=col_i, value=h)
-        c.font = _font(bold=True, color=WHITE, size=9)
-        c.fill = _fill(NAVY3)
-        c.alignment = _align("center" if col_i > 1 else "left")
-    ws.row_dimensions[r].height = 18; r+=1
-
-    factor_labels = {
-        "F1_GDSCR": "F1 — Pro Forma GDSCR",
-        "F2_Liquidity": "F2 — Liquidity",
-        "F3_NetWorth": "F3 — Net Worth",
-        "F4_IncomeQuality": "F4 — Income Quality",
-        "F5_LTV": "F5 — LTV vs FMV",
-        "F6_Collateral": "F6 — Collateral",
-    }
-
-    for key, label in factor_labels.items():
-        f = fs.get(key, {})
-        score = f.get("score", 0)
-        score_color = GREEN if score <= 2 else AMBER if score <= 4 else RED if score <= 6 else "FFCC0000"
-        bg = "FFFBF8F2"
-
-        ws.cell(row=r, column=1, value=label).font = _font(size=9)
-        ws.cell(row=r, column=1).fill = _fill(LIGHT_BG)
-        c2 = ws.cell(row=r, column=2, value=score)
-        c2.font = _font(bold=True, color=score_color, size=9)
-        c2.fill = _fill(bg)
-        c2.alignment = _align("center")
-        c3 = ws.cell(row=r, column=3, value=f.get("weight",0))
-        c3.number_format = '0%'
-        c3.font = _font(size=9)
-        c3.fill = _fill(bg)
-        c3.alignment = _align("center")
-        c4 = ws.cell(row=r, column=4, value=f.get("weighted",0))
-        c4.number_format = '0.000'
-        c4.font = _font(size=9)
-        c4.fill = _fill(bg)
-        c4.alignment = _align("center")
-        ws.cell(row=r, column=5, value=f.get("basis","")).font = _font(size=8, italic=True, color=STEEL)
-        ws.cell(row=r, column=5).fill = _fill(bg)
-        ws.row_dimensions[r].height = 16; r+=1
-
-    _spacer(ws, r); r+=1
-    _header_row(ws, r, "COMPOSITE SCORE", 5); r+=1
-    _row(ws, r, "Pre-Floor Composite", comp.get("preFloorComposite",0), "x"); r+=1
-    if comp.get("floorTriggered"):
-        _row(ws, r, "Floor Applied", comp.get("floorTriggered",""), "text", val_color=AMBER); r+=1
-    _row(ws, r, "Final Composite Score", comp.get("finalComposite",0), "x", bold=True,
-         val_color=rating_color); r+=1
-    _spacer(ws, r); r+=1
-
-    _header_row(ws, r, "ORR SCALE REFERENCE", 5); r+=1
-    scale = [
-        ("1", "Exceptional", "Approve — best execution"),
-        ("2", "Very Strong", "Approve — full lender universe"),
-        ("3", "Strong", "Approve — standard terms"),
-        ("4", "Good", "Approve with conditions"),
-        ("5", "Acceptable", "Approve with enhanced structure"),
-        ("6- / 6+", "Marginal", "Present with full risk disclosure"),
-        ("7", "Difficult", "Conditional placement — limited universe"),
-        ("8", "Hard Decline", "Do not proceed"),
-    ]
-    for orr, band_s, action in scale:
-        is_current = str(rr.get("rating","")) in orr
-        bg = NAVY3 if is_current else LIGHT_BG
-        fg = GOLD if is_current else STEEL
-        for col_i, val in enumerate([orr, band_s, action], 1):
-            c = ws.cell(row=r, column=col_i, value=val)
-            c.font = _font(bold=is_current, color=fg, size=9)
-            c.fill = _fill(bg)
-        ws.row_dimensions[r].height = 15; r+=1
-
-
-# ── TAB 9: Trend Analysis ─────────────────────────────────────────────────────
+# ── TAB 8: Trend Analysis ─────────────────────────────────────────────────────
 def _tab_trend(wb, a):
     ws = wb.create_sheet("Trend Analysis")
     ws.sheet_view.showGridLines = False
@@ -871,7 +754,6 @@ def generate_workbook(analysis: dict, output_path: str):
     _tab_balance_sheet(wb, analysis)
     _tab_nw_leverage(wb, analysis)
     _tab_collateral(wb, analysis)
-    _tab_risk_rating(wb, analysis)
     _tab_trend(wb, analysis)
 
     wb.save(output_path)
