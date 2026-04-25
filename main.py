@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from typing import Any, Optional
 
 from generate_workbook import generate_workbook
+from generate_memo import generate_memo
 from deals_engine import run_analysis
 from deals_store import (
     save_deal, load_deal, list_deals,
@@ -31,6 +32,11 @@ app.add_middleware(
 
 class WorkbookRequest(BaseModel):
     analysis: Any
+
+class MemoRequest(BaseModel):
+    analysis: Any
+    loanPrefs: Optional[dict] = {}
+    borrowerProfile: Optional[dict] = None
 
 class DealSubmission(BaseModel):
     personal: dict
@@ -96,6 +102,29 @@ def generate(req: WorkbookRequest):
         return StreamingResponse(
             io.BytesIO(content),
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/memo")
+def generate_credit_memo(req: MemoRequest):
+    try:
+        analysis = req.analysis
+        content = generate_memo(
+            analysis=analysis,
+            loan_prefs=req.loanPrefs or {},
+            borrower_profile=req.borrowerProfile or {},
+        )
+        borrower = re.sub(r"[^\x00-\x7F]", "", analysis.get("borrowerName", "Deal"))
+        borrower = re.sub(r"[^a-zA-Z0-9]", "_", borrower).strip("_")
+        borrower = re.sub(r"_+", "_", borrower) or "Deal"
+        date = re.sub(r"[^a-zA-Z0-9-]", "", analysis.get("analysisDate", "draft"))
+        filename = f"AireLogix_Credit_Memo_{borrower}_{date}.docx"
+        return StreamingResponse(
+            io.BytesIO(content),
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
     except Exception as e:
