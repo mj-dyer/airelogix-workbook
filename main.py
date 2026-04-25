@@ -113,7 +113,6 @@ def submit_deal(submission: DealSubmission, background_tasks: BackgroundTasks):
         print(f"[/deals] id={deal_id}")
 
         analysis = run_analysis(data)
-        print(f"[/deals] rating={analysis['riskRating']['rating']}")
 
         aircraft = data.get("aircraft", {})
         personal = data.get("personal", {})
@@ -135,9 +134,6 @@ def submit_deal(submission: DealSubmission, background_tasks: BackgroundTasks):
             ),
             "loanAmount": analysis["transaction"]["loanAmount"],
             "ltv": analysis["transaction"]["ltv"],
-            "rating": analysis.get("riskRating", {}).get("rating", 0),
-            "band": analysis.get("riskRating", {}).get("band", ""),
-            "disposition": analysis.get("riskRating", {}).get("disposition", ""),
             "gdscr": analysis.get("gdscr", {}).get("gdscr", 0),
             "nwCoverage": analysis["balanceSheet"]["netWorthCoverage"],
             "flagCount": len(analysis["flags"]),
@@ -167,8 +163,6 @@ def submit_deal(submission: DealSubmission, background_tasks: BackgroundTasks):
             "dealId": deal_id,
             "applicationId": deal_id,
             "status": "select_lender_pool",
-            "rating": analysis.get("riskRating", {}).get("rating", 0),
-            "band": analysis.get("riskRating", {}).get("band", ""),
             "gdscr": analysis.get("gdscr", {}).get("gdscr", 0),
             "loanAmount": analysis["transaction"]["loanAmount"],
             "aircraft": deal["aircraft"],
@@ -196,9 +190,6 @@ def get_deals():
                 "aircraftSub": d.get("aircraftSub", ""),
                 "loanAmount": d.get("loanAmount", 0),
                 "ltv": d.get("ltv", 0),
-                "rating": d.get("rating", "-"),
-                "band": d.get("band", ""),
-                "disposition": d.get("disposition", ""),
                 "gdscr": d.get("gdscr", 0),
                 "nwCoverage": d.get("nwCoverage", 0),
                 "flagCount": d.get("flagCount", 0),
@@ -621,7 +612,6 @@ def _map_section11_to_analysis(s11: dict) -> dict:
     deal_type = s11.get("meta", {}).get("deal_type", "individual")
     dp = s11.get("dealParameters", {})
     col = s11.get("collateral", {})
-    rr = s11.get("riskRating", {})
     flags = s11.get("flags", [])
     lr = s11.get("lenderRouting", [])
     rs = s11.get("repayment_sources", {})
@@ -683,22 +673,6 @@ def _map_section11_to_analysis(s11: dict) -> dict:
                 (ind.get("existingAnnualDebtService", 0) or
                  corp.get("debtStack", {}).get("existingAnnualDS", 0))
             ),
-        },
-
-        "riskRating": {
-            "rating": rr.get("final_rating", ""),
-            "band": _orr_to_band(rr.get("final_rating", "")),
-            "disposition": rr.get("disposition", ""),
-            "composite": {"finalComposite": rr.get("weighted_composite", 0)},
-            "factorScores": {
-                f.get("code", f"F{i+1}"): {
-                    "score": f.get("score", 0),
-                    "weight": f.get("weight", 0),
-                    "weighted": f.get("weighted", 0),
-                    "basis": f.get("label", "")
-                }
-                for i, f in enumerate(rr.get("factors", []))
-            }
         },
 
         "flags": [
@@ -837,19 +811,6 @@ def _map_section11_to_analysis(s11: dict) -> dict:
     return analysis
 
 
-def _orr_to_band(rating: str) -> str:
-    bands = {
-        "1": "Exceptional", "1+": "Exceptional", "1-": "Exceptional",
-        "2": "Very Strong", "2+": "Very Strong", "2-": "Very Strong",
-        "3": "Strong", "3+": "Strong", "3-": "Strong",
-        "4": "Good", "4+": "Good", "4-": "Good",
-        "5": "Acceptable", "5+": "Acceptable", "5-": "Acceptable",
-        "6": "Marginal", "6+": "Marginal", "6-": "Marginal",
-        "7": "Difficult", "8": "Hard Decline",
-    }
-    return bands.get(str(rating).strip(), "")
-
-
 def _gdscr_label(g: float) -> str:
     if g >= 2.0: return "Strong"
     if g >= 1.5: return "Adequate"
@@ -888,7 +849,6 @@ async def ingest_section11(req: Section11Request):
 
         dp = s11.get("dealParameters", {})
         col = s11.get("collateral", {})
-        rr = s11.get("riskRating", {})
         flags = analysis.get("flags", [])
 
         deal = {
@@ -908,9 +868,6 @@ async def ingest_section11(req: Section11Request):
             ),
             "loanAmount": dp.get("loan_amount", 0),
             "ltv": dp.get("ltv", 0),
-            "rating": rr.get("final_rating", ""),
-            "band": _orr_to_band(rr.get("final_rating", "")),
-            "disposition": rr.get("disposition", ""),
             "gdscr": analysis.get("gdscr", {}).get("gdscr", 0),
             "nwCoverage": analysis.get("balanceSheet", {}).get("netWorthCoverage", 0),
             "flagCount": len(flags),
@@ -925,8 +882,6 @@ async def ingest_section11(req: Section11Request):
         return {
             "success": True,
             "dealId": deal_id,
-            "rating": rr.get("final_rating", ""),
-            "band": _orr_to_band(rr.get("final_rating", "")),
             "gdscr": analysis.get("gdscr", {}).get("gdscr", 0),
             "borrowerName": analysis.get("borrowerName", ""),
             "aircraft": deal["aircraft"],
