@@ -439,7 +439,7 @@ def _tab_debt_service(wb, a):
 
 
 # ── TAB 5: Balance Sheet ──────────────────────────────────────────────────────
-def _tab_balance_sheet(wb, a):
+def _tab_balance_sheet(wb, a, is_corp=False):
     ws = wb.create_sheet("Balance Sheet")
     ws.sheet_view.showGridLines = False
     ws.sheet_properties.tabColor = "2D9E5F"
@@ -448,7 +448,8 @@ def _tab_balance_sheet(wb, a):
     bs = a.get("balanceSheet", {})
 
     r = 1
-    c = ws.cell(row=r, column=1, value="PERSONAL BALANCE SHEET")
+    title = "ENTITY BALANCE SHEET" if is_corp else "PERSONAL BALANCE SHEET"
+    c = ws.cell(row=r, column=1, value=title)
     c.font = _font(bold=True, color=GOLD, size=12)
     c.fill = _fill(NAVY)
     ws.merge_cells(f"A{r}:C{r}")
@@ -743,15 +744,239 @@ def _tab_trend(wb, a):
         ws.row_dimensions[r].height = 18; r+=1
 
 
+# ── TAB 2 (Corp): Revenue & EBITDA ───────────────────────────────────────────
+def _tab_corp_ebitda(wb, a):
+    ws = wb.create_sheet("Revenue & EBITDA")
+    ws.sheet_view.showGridLines = False
+    ws.sheet_properties.tabColor = "2D9E5F"
+    _setup_cols(ws, [36, 20, 20, 20])
+
+    inc  = a.get("incomeNormalization", {})
+    gd   = a.get("gdscr", {})
+    tx   = a.get("transaction", {})
+    years = inc.get("taxYears", [])
+    y1 = years[0] if len(years) > 0 else "Year 1"
+    y2 = years[1] if len(years) > 1 else "Year 2"
+
+    rev_y1 = inc.get("revenueYear1", 0)
+    rev_y2 = inc.get("revenueYear2", 0)
+    ebitda_y1 = inc.get("year1Total", 0)
+    ebitda_y2 = inc.get("year2Total", 0)
+    qualifying = inc.get("qualifyingIncome", 0)
+
+    r = 1
+    c = ws.cell(row=r, column=1, value="REVENUE & EBITDA ANALYSIS")
+    c.font = _font(bold=True, color=GOLD, size=12)
+    c.fill = _fill(NAVY)
+    ws.merge_cells(f"A{r}:D{r}")
+    ws.row_dimensions[r].height = 26; r += 1
+
+    note = inc.get("note", "")
+    c = ws.cell(row=r, column=1, value=note)
+    c.font = _font(italic=True, color=STEEL, size=8)
+    c.fill = _fill(NAVY2)
+    ws.merge_cells(f"A{r}:D{r}")
+    ws.row_dimensions[r].height = 14; r += 1
+    _spacer(ws, r); r += 1
+
+    # Entity overview
+    _header_row(ws, r, "ENTITY OVERVIEW", 4); r += 1
+    _row(ws, r, "Entity Name", inc.get("entityName", a.get("borrowerName", "")), "text", bold=True); r += 1
+    _row(ws, r, "Financial Statement Quality", inc.get("financialStatementQuality", "Not specified"), "text"); r += 1
+    _row(ws, r, "Governing Fiscal Year", str(inc.get("qualifyingYear", "")), "text"); r += 1
+    _spacer(ws, r); r += 1
+
+    # Column headers for Y1 / Y2
+    _header_row(ws, r, "REVENUE", 4); r += 1
+    for col_i, lbl in enumerate(["Metric", str(y1), str(y2), "Change"], 1):
+        c = ws.cell(row=r, column=col_i, value=lbl)
+        c.font = _font(bold=True, color=WHITE, size=9)
+        c.fill = _fill(NAVY3)
+        c.alignment = _align("center" if col_i > 1 else "left")
+    ws.row_dimensions[r].height = 18; r += 1
+
+    def _two_yr_row(label, v1, v2, fmt="dollar", bold=False):
+        nonlocal r
+        chg = v2 - v1
+        _label(ws, r, 1, label, bold=bold)
+        _value(ws, r, 2, v1, fmt, bold=bold)
+        _value(ws, r, 3, v2, fmt, bold=bold)
+        chg_c = _value(ws, r, 4, chg, fmt)
+        chg_c.font = _font(color=(GREEN if chg >= 0 else RED), size=9, bold=bold)
+        ws.row_dimensions[r].height = 16; r += 1
+
+    _two_yr_row(f"Total Revenue ({y1} / {y2})", rev_y1, rev_y2, bold=True)
+    if rev_y1 and rev_y2:
+        yoy_rev = (rev_y2 - rev_y1) / rev_y1
+        yoy_color = GREEN if yoy_rev >= 0 else RED
+        _label(ws, r, 1, "  Revenue YoY Change")
+        _value(ws, r, 4, yoy_rev, "pct", color=yoy_color)
+        ws.row_dimensions[r].height = 16; r += 1
+    _spacer(ws, r); r += 1
+
+    # EBITDA section
+    _header_row(ws, r, "EBITDA", 4); r += 1
+    for col_i, lbl in enumerate(["Metric", str(y1), str(y2), "Change"], 1):
+        c = ws.cell(row=r, column=col_i, value=lbl)
+        c.font = _font(bold=True, color=WHITE, size=9)
+        c.fill = _fill(NAVY3)
+        c.alignment = _align("center" if col_i > 1 else "left")
+    ws.row_dimensions[r].height = 18; r += 1
+
+    _two_yr_row(f"EBITDA ({y1} / {y2})", ebitda_y1, ebitda_y2, bold=True)
+    if ebitda_y1 and ebitda_y2:
+        yoy_e = (ebitda_y2 - ebitda_y1) / ebitda_y1
+        yoy_color = GREEN if yoy_e >= 0 else RED
+        _label(ws, r, 1, "  EBITDA YoY Change")
+        _value(ws, r, 4, yoy_e, "pct", color=yoy_color)
+        ws.row_dimensions[r].height = 16; r += 1
+
+    # EBITDA margins
+    if rev_y1 and ebitda_y1:
+        _label(ws, r, 1, "  EBITDA Margin " + str(y1))
+        _value(ws, r, 2, ebitda_y1 / rev_y1, "pct")
+        ws.row_dimensions[r].height = 16; r += 1
+    if rev_y2 and ebitda_y2:
+        _label(ws, r, 1, "  EBITDA Margin " + str(y2))
+        _value(ws, r, 3, ebitda_y2 / rev_y2, "pct")
+        ws.row_dimensions[r].height = 16; r += 1
+
+    _spacer(ws, r); r += 1
+    _header_row(ws, r, "QUALIFYING EBITDA", 4); r += 1
+    _row(ws, r, "Governing Year EBITDA (Lower of Two)", qualifying, bold=True, val_color=GREEN); r += 1
+    var = inc.get("variancePct", 0)
+    var_color = GREEN if abs(var) <= 15 else AMBER if abs(var) <= 25 else RED
+    _row(ws, r, "Year-over-Year Variance", var / 100 if var else 0, "pct", val_color=var_color); r += 1
+    _spacer(ws, r); r += 1
+
+    # Corporate DSCR
+    _header_row(ws, r, "CORPORATE DSCR", 4); r += 1
+    _row(ws, r, "Qualifying EBITDA", qualifying, bold=True); r += 1
+    _row(ws, r, "Total Pro Forma Annual D/S", tx.get("totalProFormaDS", 0)); r += 1
+    gdscr = gd.get("gdscr", 0)
+    gdscr_color = GREEN if gdscr >= 2.4 else AMBER if gdscr >= 1.2 else RED
+    _row(ws, r, "EBITDA / D/S Coverage", gdscr, "x", bold=True, val_color=gdscr_color); r += 1
+    _row(ws, r, "Assessment", gd.get("assessment", ""), "text"); r += 1
+    _spacer(ws, r); r += 1
+
+    # Methodology
+    _header_row(ws, r, "METHODOLOGY NOTES", 4); r += 1
+    notes = [
+        "Lower of two fiscal years governs qualifying EBITDA (conservative principle)",
+        "EBITDA = Net Income + Interest Expense + Depreciation + Amortization",
+        "For S-Corps, no income tax add-back (tax flows to owners, not entity)",
+        "One-time and non-recurring charges excluded — normalized EBITDA used where available",
+        "Charter revenue excluded where not core to primary business operations",
+    ]
+    for note in notes:
+        c = ws.cell(row=r, column=1, value=f"  • {note}")
+        c.font = _font(size=8, italic=True, color=STEEL)
+        c.fill = _fill(LIGHT_BG)
+        ws.merge_cells(f"A{r}:D{r}")
+        ws.row_dimensions[r].height = 14; r += 1
+
+
+# ── TAB 3 (Corp): Entity Debt Stack ──────────────────────────────────────────
+def _tab_corp_debt_stack(wb, a):
+    ws = wb.create_sheet("Entity Debt Stack")
+    ws.sheet_view.showGridLines = False
+    ws.sheet_properties.tabColor = "C8A96E"
+    _setup_cols(ws, [36, 20, 20])
+
+    bs  = a.get("balanceSheet", {})
+    tx  = a.get("transaction", {})
+    gd  = a.get("gdscr", {})
+    inc = a.get("incomeNormalization", {})
+
+    r = 1
+    c = ws.cell(row=r, column=1, value="ENTITY DEBT STACK")
+    c.font = _font(bold=True, color=GOLD, size=12)
+    c.fill = _fill(NAVY)
+    ws.merge_cells(f"A{r}:C{r}")
+    ws.row_dimensions[r].height = 26; r += 1
+    _spacer(ws, r); r += 1
+
+    # Entity balance sheet summary
+    _header_row(ws, r, "ENTITY BALANCE SHEET SUMMARY", 3); r += 1
+    _row(ws, r, "Total Assets", bs.get("grossTotalAssets", 0), bold=True); r += 1
+    _row(ws, r, "  Total Current Assets", bs.get("totalCurrentAssets", 0), indent=1); r += 1
+    _row(ws, r, "Total Liabilities", bs.get("totalLiabilities", 0), bold=True); r += 1
+    _row(ws, r, "  Total Current Liabilities", bs.get("totalCurrentLiabilities", 0), indent=1); r += 1
+    nw = bs.get("statedNetWorth", 0)
+    _row(ws, r, "Entity Net Worth / Equity", nw, bold=True,
+         val_color=GREEN if nw > 0 else RED); r += 1
+    _spacer(ws, r); r += 1
+
+    _header_row(ws, r, "LEVERAGE & COVERAGE RATIOS", 3); r += 1
+    cr = bs.get("currentRatio", bs.get("liquidityRatio", 0))
+    cr_color = GREEN if cr >= 2.0 else AMBER if cr >= 1.0 else RED
+    _row(ws, r, "Current Ratio (Current Assets / Current Liab)", cr, "x", val_color=cr_color); r += 1
+    lev = bs.get("leverageRatio", 0)
+    lev_color = RED if lev > 0.7 else AMBER if lev > 0.5 else GREEN
+    _row(ws, r, "Leverage Ratio (Total Liab / Total Assets)", lev, "x", val_color=lev_color); r += 1
+    de = bs.get("debtToEbitda", 0)
+    de_color = GREEN if de < 3.0 else AMBER if de < 5.0 else RED
+    _row(ws, r, "Debt / EBITDA", de, "x", val_color=de_color); r += 1
+    loan = tx.get("loanAmount", 0)
+    nw_cov = (nw / loan) if loan else 0
+    nw_cov_color = GREEN if nw_cov >= 3.0 else AMBER if nw_cov >= 1.5 else RED
+    _row(ws, r, "Net Worth Coverage (Entity NW / Loan)", nw_cov, "x", bold=True,
+         val_color=nw_cov_color); r += 1
+    _spacer(ws, r); r += 1
+
+    # Debt service obligations
+    _header_row(ws, r, "DEBT SERVICE OBLIGATIONS", 3); r += 1
+    _row(ws, r, "Existing Annual Debt Service", tx.get("existingAnnualDS", 0)); r += 1
+    _row(ws, r, "Proposed Aircraft Financing (Annual)", tx.get("annualAircraftDS", 0)); r += 1
+    _row(ws, r, "Total Pro Forma Annual Debt Service", tx.get("totalProFormaDS", 0), bold=True); r += 1
+    _spacer(ws, r); r += 1
+
+    # EBITDA coverage
+    _header_row(ws, r, "EBITDA COVERAGE", 3); r += 1
+    qualifying = inc.get("qualifyingIncome", 0)
+    _row(ws, r, "Qualifying EBITDA", qualifying, bold=True); r += 1
+    _row(ws, r, "Total Pro Forma D/S", tx.get("totalProFormaDS", 0)); r += 1
+    gdscr = gd.get("gdscr", 0)
+    gdscr_color = GREEN if gdscr >= 2.4 else AMBER if gdscr >= 1.2 else RED
+    _row(ws, r, "EBITDA / D/S Coverage", gdscr, "x", bold=True, val_color=gdscr_color); r += 1
+    _spacer(ws, r); r += 1
+
+    # Benchmark thresholds
+    _header_row(ws, r, "BENCHMARK THRESHOLDS", 3); r += 1
+    benchmarks = [
+        ("Current Ratio",       "≥ 2.0x Strong  |  1.0–2.0x Adequate  |  < 1.0x Critical"),
+        ("Leverage Ratio",      "< 0.5x Strong  |  0.5–0.7x Adequate  |  > 0.7x Elevated"),
+        ("Debt / EBITDA",       "< 3.0x Strong  |  3.0–5.0x Adequate  |  > 5.0x Elevated"),
+        ("EBITDA / D/S",        "≥ 2.4x Strong  |  1.2–2.4x Acceptable  |  < 1.2x Marginal"),
+        ("NW Coverage",         "≥ 3.0x Strong  |  1.5–3.0x Adequate  |  < 1.5x Weak"),
+    ]
+    for label, bench in benchmarks:
+        c1 = ws.cell(row=r, column=1, value=label)
+        c1.font = _font(bold=True, size=9)
+        c1.fill = _fill(LIGHT_BG)
+        c2 = ws.cell(row=r, column=2, value=bench)
+        c2.font = _font(size=8, italic=True, color=STEEL)
+        c2.fill = _fill("FFFBF8F2")
+        ws.merge_cells(f"B{r}:C{r}")
+        ws.row_dimensions[r].height = 16; r += 1
+
+
 # ── MAIN ENTRY POINT ──────────────────────────────────────────────────────────
 def generate_workbook(analysis: dict, output_path: str):
     wb = Workbook()
+    is_corp = analysis.get("dealType") in ("corporate", "company", "private_company")
 
     _tab_dashboard(wb, analysis)
-    _tab_income(wb, analysis)
-    _tab_k1(wb, analysis)
+
+    if is_corp:
+        _tab_corp_ebitda(wb, analysis)
+        _tab_corp_debt_stack(wb, analysis)
+    else:
+        _tab_income(wb, analysis)
+        _tab_k1(wb, analysis)
+
     _tab_debt_service(wb, analysis)
-    _tab_balance_sheet(wb, analysis)
+    _tab_balance_sheet(wb, analysis, is_corp=is_corp)
     _tab_nw_leverage(wb, analysis)
     _tab_collateral(wb, analysis)
     _tab_trend(wb, analysis)
