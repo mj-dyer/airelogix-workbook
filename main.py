@@ -909,7 +909,7 @@ def _liquidity_label(r: float) -> str:
 
 
 @app.post("/ingest-section11")
-async def ingest_section11(req: Section11Request):
+async def ingest_section11(req: Section11Request, background_tasks: BackgroundTasks):
     """
     Receive raw spreading prompt output, extract Section 11 JSON,
     map to analysis format, and store/update the deal.
@@ -961,6 +961,15 @@ async def ingest_section11(req: Section11Request):
 
         save_deal(deal)
         print(f"[/ingest-section11] Saved deal {deal_id}")
+
+        background_tasks.add_task(
+            generate_bio,
+            deal_id,
+            analysis.get("borrowerName", req.borrower_name or ""),
+            s11.get("meta", {}).get("deal_type", "individual"),
+            {},
+            analysis,
+        )
 
         return {
             "success": True,
