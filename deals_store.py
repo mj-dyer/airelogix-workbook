@@ -114,8 +114,13 @@ def load_deal(deal_id: str) -> Optional[dict]:
     if _USE_DB:
         conn = _get_conn()
         try:
-            rows = conn.run("SELECT data FROM deals WHERE deal_id=:deal_id", deal_id=deal_id)
-            return json.loads(rows[0][0]) if rows else None
+            rows = conn.run("SELECT data, ioi_count, status FROM deals WHERE deal_id=:deal_id", deal_id=deal_id)
+            if not rows:
+                return None
+            d = json.loads(rows[0][0])
+            d["ioiCount"] = rows[0][1]
+            d["status"] = rows[0][2]
+            return d
         finally:
             conn.close()
     else:
@@ -127,8 +132,14 @@ def list_deals() -> list:
     if _USE_DB:
         conn = _get_conn()
         try:
-            rows = conn.run("SELECT data FROM deals ORDER BY created_at DESC LIMIT 200")
-            return [json.loads(r[0]) for r in rows]
+            rows = conn.run("SELECT data, ioi_count, status FROM deals ORDER BY created_at DESC LIMIT 200")
+            result = []
+            for r in rows:
+                d = json.loads(r[0])
+                d["ioiCount"] = r[1]
+                d["status"] = r[2]
+                result.append(d)
+            return result
         finally:
             conn.close()
     else:
