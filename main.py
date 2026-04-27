@@ -231,6 +231,43 @@ def get_deals():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/deals/by-email")
+def get_deal_by_email(email: str):
+    try:
+        deals = list_deals()
+        email_lower = email.strip().lower()
+        match = next(
+            (d for d in deals if d.get("borrowerEmail", "").strip().lower() == email_lower),
+            None,
+        )
+        if not match:
+            raise HTTPException(status_code=404, detail="No application found for this email address.")
+        analysis = match.get("analysis", {})
+        return {
+            "id": match["dealId"],
+            "applicationId": match["dealId"],
+            "name": match.get("borrowerName", ""),
+            "email": match.get("borrowerEmail", ""),
+            "loanAmount": match.get("loanAmount", 0),
+            "purchasePrice": analysis.get("transaction", {}).get("purchasePrice", 0),
+            "ioiCount": match.get("ioiCount", 0),
+            "status": match.get("status", "under_review"),
+            "submittedDate": match.get("receivedDate", ""),
+            "aircraft": analysis.get("aircraft", {}),
+            "documents": [],
+            "contact": {
+                "name": "AireLogix Team",
+                "title": "Originations",
+                "email": "originations@airelogix.com",
+                "phone": "(612) 555-0100",
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/deals/{deal_id}")
 def get_deal(deal_id: str):
     deal = load_deal(deal_id)
