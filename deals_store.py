@@ -205,14 +205,19 @@ def save_ioi(deal_id: str, ioi: dict) -> str:
                 VALUES (:ioi_id, :deal_id, :institution, :data)
                 ON CONFLICT (ioi_id) DO UPDATE SET data=EXCLUDED.data
             """, ioi_id=ioi_id, deal_id=deal_id, institution=institution, data=json.dumps(ioi))
+            count_rows = conn.run(
+                "SELECT COUNT(*)::int FROM iois WHERE deal_id=:deal_id",
+                deal_id=deal_id
+            )
+            new_count = count_rows[0][0] if count_rows else 1
             conn.run("""
                 UPDATE deals SET
-                    ioi_count=(SELECT COUNT(*) FROM iois WHERE deal_id=:deal_id),
+                    ioi_count=:ioi_count,
                     status=CASE WHEN status IN ('select_lender_pool','package_distributed','under_review')
                                 THEN 'ioi_received' ELSE status END,
                     updated_at=NOW()
                 WHERE deal_id=:deal_id
-            """, deal_id=deal_id)
+            """, ioi_count=new_count, deal_id=deal_id)
         finally:
             conn.close()
     else:
