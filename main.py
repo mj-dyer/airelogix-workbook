@@ -4,6 +4,7 @@ FastAPI -- workbook generation + deal management
 """
 
 import io, re, tempfile, os, traceback
+from datetime import datetime, timezone
 import httpx
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -291,6 +292,22 @@ def patch_status(deal_id: str, update: StatusUpdate):
     if not deal:
         raise HTTPException(status_code=404, detail=f"Deal {deal_id} not found")
     return {"success": True, "dealId": deal_id, "status": update.status}
+
+
+@app.post("/deals/{deal_id}/distribute")
+def distribute_deal(deal_id: str, payload: dict):
+    deal = load_deal(deal_id)
+    if not deal:
+        raise HTTPException(status_code=404, detail=f"Deal {deal_id} not found")
+    try:
+        deal["lenderSelections"] = payload.get("lenderSelections", [])
+        deal["distributedAt"] = datetime.now(timezone.utc).isoformat()
+        deal["status"] = "package_distributed"
+        save_deal(deal)
+        return {"success": True, "dealId": deal_id, "status": "package_distributed",
+                "distributedCount": len([s for s in deal["lenderSelections"] if s.get("tag") != "exclude"])}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.delete("/deals/{deal_id}")
