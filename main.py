@@ -147,6 +147,10 @@ def submit_deal(submission: DealSubmission, background_tasks: BackgroundTasks):
         aircraft = data.get("aircraft", {})
         personal = data.get("personal", {})
 
+        # Inject fields not derived by the analysis engine
+        if aircraft.get("hangarIdent"):
+            analysis.setdefault("aircraft", {})["hangarIdent"] = aircraft["hangarIdent"]
+
         deal = {
             "dealId": deal_id,
             "applicationId": deal_id,
@@ -168,6 +172,8 @@ def submit_deal(submission: DealSubmission, background_tasks: BackgroundTasks):
             "nwCoverage": analysis["balanceSheet"]["netWorthCoverage"],
             "flagCount": len(analysis["flags"]),
             "criticalFlags": len([f for f in analysis["flags"] if f.get("severity") == "CRITICAL"]),
+            "aircraftBase": aircraft.get("hangarIdent", ""),
+            "dealType": data.get("borrowerType", "individual"),
             "analysis": analysis,
             "transactionType": data.get("transactionType", "purchase"),
             "borrowerType": data.get("borrowerType", "individual"),
@@ -717,6 +723,7 @@ def _map_section11_to_analysis(s11: dict) -> dict:
             "year": dp.get("aircraft_year", col.get("year", 0)),
             "make": dp.get("aircraft_make", col.get("make", "")),
             "model": dp.get("aircraft_model", col.get("model", "")),
+            "hangarIdent": dp.get("aircraft_hangar_ident", ""),
         },
 
         "collateral": {
