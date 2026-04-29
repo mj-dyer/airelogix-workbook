@@ -257,6 +257,8 @@ def get_deal_by_email(email: str):
             "email": match.get("borrowerEmail", ""),
             "loanAmount": match.get("loanAmount", 0),
             "purchasePrice": analysis.get("transaction", {}).get("purchasePrice", 0),
+            "termMonths": analysis.get("transaction", {}).get("termMonths", 60),
+            "illustrativeRate": analysis.get("transaction", {}).get("illustrativeRate", 6.50),
             "ioiCount": match.get("ioiCount", 0),
             "status": match.get("status", "under_review"),
             "submittedDate": match.get("receivedDate", ""),
