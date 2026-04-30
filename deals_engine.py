@@ -50,8 +50,9 @@ def get_xls_fmv(year: int, aftt: int, program: str = "") -> Optional[float]:
     h_adj = delta * A + abs(delta) * delta * B
     base = b["retail"] * 1e6 + h_adj
     # Program discount
+    # ESP-G / ESP Gold = 0.000 (co-equal with PA+, per handoff doc)
     p = (program or "").lower()
-    if "pa+" in p or "esp gold" in p or "tap blue" in p or "power advantage plus" in p:
+    if "pa+" in p or "esp-g" in p or "esp gold" in p or "tap blue" in p or "power advantage plus" in p:
         disc = 0.0
     elif "power advantage" in p or "esp" in p or " pa " in p:
         disc = 0.020
@@ -259,6 +260,26 @@ def monthly_payment(principal: float, annual_rate: float, term_months: int,
     return (principal * g - balloon) * r / (g - 1)
 
 
+# Vintage-specific XLS+ base depreciation rates (bull, base, bear).
+# Source: XLS+ curve handoff doc v3 — locked from 25 closed comps. Do not modify.
+XLS_DEPR_RATES = {
+    2008: (0.020, 0.035, 0.055),
+    2009: (0.020, 0.035, 0.055),
+    2010: (0.020, 0.035, 0.055),
+    2011: (0.018, 0.030, 0.048),
+    2012: (0.018, 0.030, 0.048),
+    2013: (0.018, 0.030, 0.048),
+    2014: (0.015, 0.030, 0.048),
+    2015: (0.015, 0.030, 0.048),
+    2016: (0.015, 0.030, 0.048),
+    2017: (0.025, 0.045, 0.065),
+    2018: (0.025, 0.045, 0.065),
+    2019: (0.025, 0.045, 0.065),
+    2020: (0.025, 0.045, 0.065),
+    2021: (0.025, 0.045, 0.065),
+    2022: (0.025, 0.045, 0.065),
+}
+
 # Vintage-specific G550 base depreciation rates (bull, base, bear).
 # Source: handoff doc DEPR_RATES — locked from 51 closed sales. Do not modify.
 G550_DEPR_RATES = {
@@ -302,7 +323,8 @@ def get_balloon(fmv: float, loan: float, year: int, aftt: int,
     elif "CHALLENGER 350" in model_upper or "CL350" in model_upper:
         depr_rate = 0.030
     elif "XLS" in model_upper:
-        depr_rate = 0.035
+        rates = XLS_DEPR_RATES.get(int(year), (0.025, 0.045, 0.065))
+        depr_rate = rates[1]  # base scenario
     else:
         depr_rate = 0.035
 
