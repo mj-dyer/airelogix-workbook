@@ -98,17 +98,24 @@ def get_cl350_fmv(year: int, aftt: int, program: str = "") -> Optional[float]:
     B = B0_CL350 * math.exp(KK_CL350 * (10 - b["age"]))
     h_adj = delta * A + abs(delta) * delta * B
     base = b["retail"] * 1e6 + h_adj
-    cal = MARKET_CAL_CL350.get(int(year), 0)
-    base = base * (1 + cal)
-    # Program premium
+
+    # Program discount — MSP-G is baseline (0%), all others are discounts
+    # Source: CL350 curve v4, 10 confirmed closes. Do not use premiums.
     p = (program or "").lower()
-    if "jssi" in p or "esp" in p or "essential select" in p:
-        base *= 1.035
+    if "msp-g" in p or "msp gold" in p:
+        disc = 0.000  # MSP Gold (Honeywell) — baseline
     elif "msp" in p or "smart parts" in p:
-        base *= 1.025
+        disc = 0.015  # MSP Standard / Smart Parts — data-confirmed -1.5% vs MSP-G
+    elif "jssi" in p:
+        disc = 0.030  # JSSI 100% / Essential Select — data-confirmed -3.0% vs MSP-G
     elif "off" in p or "not enrolled" in p or not program:
-        base *= 0.90
-    return round(base / 1e6, 3)
+        disc = 0.100  # Off-program
+    else:
+        disc = 0.060  # Unknown / other enrolled
+
+    cal = MARKET_CAL_CL350.get(int(year), 0)
+    fmv = base * (1 - disc) * (1 + cal)
+    return round(fmv / 1e6, 3)
 
 
 # ── G550 Collateral Curve (v4) ────────────────────────────────────────────────
