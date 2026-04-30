@@ -154,21 +154,22 @@ def get_g550_fmv(year: int, aftt: int, program: str = "") -> Optional[float]:
         h_adj = -(bbv * (G550_D1 / 100) * (t1 / 100) +
                   bbv * (G550_D2 / 100) * (t2 / 100))
 
-    # Program adjustment
+    # Program discount (applied as reduction before market cal)
+    # Source: handoff doc PROGRAM_DISCOUNTS — RRCC/RRCC-E are baseline (0%), not a premium
     p = (program or "").lower()
-    if "enhanced" in p and ("corporatecare" in p or "rolls" in p or "rrcc" in p):
-        prog_adj = 0.030   # RRCC Enhanced: +3% premium
-    elif "corporatecare" in p or "rrcc" in p or "rolls-royce" in p or "rolls royce" in p:
-        prog_adj = 0.0     # RRCC Standard: baseline
+    if "corporatecare" in p or "rrcc" in p or "rolls-royce" in p or "rolls royce" in p:
+        prog_disc = 0.000  # RRCC and RRCC Enhanced: baseline
     elif "jssi" in p:
-        prog_adj = -0.030  # JSSI: -3% discount on G550
+        prog_disc = 0.030  # JSSI 100%
+    elif "eap" in p or "msp" in p or "tap" in p:
+        prog_disc = 0.020  # EAP / other enrolled
     elif "off" in p or "not enrolled" in p or not program:
-        prog_adj = -0.100  # Off program: -10%
+        prog_disc = 0.100  # Off program / null
     else:
-        prog_adj = -0.060  # Unrecognized: -6%
+        prog_disc = 0.060  # Unrecognized / unknown
 
     cal = CAL_G550.get(int(year), 0)
-    fmv = (bbv + h_adj) * (1 + prog_adj) * (1 + cal)
+    fmv = (bbv + h_adj) * (1 - prog_disc) * (1 + cal)
     return round(fmv / 1e6, 3)
 
 def get_generic_fmv(year: int, make: str, model: str, aftt: int, program: str = "") -> Optional[float]:
@@ -258,30 +259,58 @@ def monthly_payment(principal: float, annual_rate: float, term_months: int,
     return (principal * g - balloon) * r / (g - 1)
 
 
+# Vintage-specific G550 base depreciation rates (bull, base, bear).
+# Source: handoff doc DEPR_RATES — locked from 51 closed sales. Do not modify.
+G550_DEPR_RATES = {
+    2003: (0.020, 0.035, 0.055),
+    2004: (0.020, 0.035, 0.055),
+    2005: (0.020, 0.035, 0.055),
+    2006: (0.022, 0.040, 0.060),
+    2007: (0.022, 0.040, 0.060),
+    2008: (0.022, 0.040, 0.060),
+    2009: (0.020, 0.038, 0.055),
+    2010: (0.020, 0.038, 0.055),
+    2011: (0.018, 0.030, 0.048),
+    2012: (0.018, 0.030, 0.048),
+    2013: (0.018, 0.030, 0.048),
+    2014: (0.015, 0.030, 0.048),
+    2015: (0.015, 0.030, 0.048),
+    2016: (0.015, 0.030, 0.048),
+    2017: (0.025, 0.045, 0.065),
+    2018: (0.025, 0.045, 0.065),
+    2019: (0.025, 0.045, 0.065),
+    2020: (0.025, 0.045, 0.065),
+}
+
+
 def get_balloon(fmv: float, loan: float, year: int, aftt: int,
                 term_months: int, make: str, model: str, program: str) -> float:
     """
-    Calculate balloon payment = 70% of projected FMV at maturity.
-    Uses simple annual depreciation from current FMV, capped at 90% of loan.
-    fmv is in dollars (e.g. 18252000).
+    Balloon = forward FMV at maturity × actual deal LTV.
+    G550: uses vintage-specific base depreciation rate from G550_DEPR_RATES.
+    Other types: use simple flat rates.
+    fmv is in dollars (e.g. 34619000).
     """
-    term_years = round(term_months / 12)
+    term_years = term_months / 12
     model_upper = (model or "").upper()
+    make_upper  = (make or "").upper()
 
-    # Simple depreciation rate by aircraft type
-    if "CHALLENGER 350" in model_upper or "CL350" in model_upper:
-        depr_rate = 0.030  # 3.0%/yr base
-    elif "G550" in model_upper or "G650" in model_upper or "GULFSTREAM" in (make or "").upper():
-        depr_rate = 0.028  # G550/Gulfstream depreciate slower
+    if "G550" in model_upper or "G-550" in model_upper or (
+            "GULFSTREAM" in make_upper and "G550" in model_upper):
+        rates = G550_DEPR_RATES.get(int(year), (0.025, 0.045, 0.065))
+        depr_rate = rates[1]  # base scenario
+    elif "CHALLENGER 350" in model_upper or "CL350" in model_upper:
+        depr_rate = 0.030
     elif "XLS" in model_upper:
         depr_rate = 0.035
     else:
         depr_rate = 0.035
 
     fmv_at_maturity = fmv * ((1 - depr_rate) ** term_years)
-    # Balloon = projected FMV at maturity × standard LTV covenant (70%)
-    # This is collateral-based — independent of advance amount
-    balloon = fmv_at_maturity * 0.70
+
+    # Balloon = ffmv × actual deal LTV (not hardcoded 70%)
+    ltv_fraction = loan / fmv if fmv else 0.70
+    balloon = fmv_at_maturity * ltv_fraction
     return balloon
 
 
