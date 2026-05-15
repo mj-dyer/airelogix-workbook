@@ -250,6 +250,82 @@ def load_iois(deal_id: str) -> list:
         return json.load(open(p)) if os.path.exists(p) else []
 
 
+def save_ioi_feedback(deal_id: str, institution: str, reasons: list) -> bool:
+    """Attach borrower decline feedback to an IOI."""
+    payload = {
+        "declinedByBorrower": True,
+        "declinedAt": datetime.now(timezone.utc).isoformat(),
+        "declinedReasons": reasons,
+    }
+    if _USE_DB:
+        conn = _get_conn()
+        try:
+            rows = conn.run(
+                "SELECT data FROM iois WHERE deal_id=:deal_id AND institution=:institution",
+                deal_id=deal_id, institution=institution
+            )
+            if not rows:
+                return False
+            ioi = json.loads(rows[0][0])
+            ioi.update(payload)
+            conn.run(
+                "UPDATE iois SET data=:data WHERE deal_id=:deal_id AND institution=:institution",
+                data=json.dumps(ioi), deal_id=deal_id, institution=institution
+            )
+            return True
+        finally:
+            conn.close()
+    else:
+        _ensure_dirs()
+        p = os.path.join(IOIS_DIR, f"{deal_id}_iois.json")
+        if not os.path.exists(p):
+            return False
+        iois = json.load(open(p))
+        updated = False
+        for ioi in iois:
+            if ioi.get("institution") == institution:
+                ioi.update(payload)
+                updated = True
+        if updated:
+            with open(p, "w") as f:
+                json.dump(iois, f, indent=2)
+        return updated
+
+
+def load_declined_iois(institution: str) -> list:
+    """Return deals where the given institution's IOI was declined by the borrower."""
+    results = []
+    if _USE_DB:
+        conn = _get_conn()
+        try:
+            rows = conn.run(
+                """SELECT i.deal_id, i.data, d.data as deal_data
+                   FROM iois i JOIN deals d ON d.deal_id=i.deal_id
+                   WHERE i.institution=:institution""",
+                institution=institution
+            )
+            for row in rows:
+                ioi = json.loads(row[1])
+                if ioi.get("declinedByBorrower"):
+                    deal = json.loads(row[2])
+                    results.append({"dealId": row[0], "ioi": ioi, "deal": deal})
+        finally:
+            conn.close()
+    else:
+        _ensure_dirs()
+        if os.path.exists(IOIS_DIR):
+            for fname in os.listdir(IOIS_DIR):
+                if not fname.endswith("_iois.json"):
+                    continue
+                deal_id = fname.replace("_iois.json", "")
+                iois = json.load(open(os.path.join(IOIS_DIR, fname)))
+                for ioi in iois:
+                    if ioi.get("institution") == institution and ioi.get("declinedByBorrower"):
+                        deal = load_deal(deal_id) or {}
+                        results.append({"dealId": deal_id, "ioi": ioi, "deal": deal})
+    return results
+
+
 # ── Calloway Demo Seed ────────────────────────────────────────────────────────
 
 CALLOWAY_DEAL_ID = "AL-2026-CALLOWAY"

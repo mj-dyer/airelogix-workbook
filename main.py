@@ -17,7 +17,8 @@ from generate_memo import generate_memo
 from deals_engine import run_analysis
 from deals_store import (
     save_deal, load_deal, list_deals,
-    update_deal_status, save_ioi, load_iois, generate_deal_id
+    update_deal_status, save_ioi, load_iois, generate_deal_id,
+    save_ioi_feedback, load_declined_iois
 )
 from bio_engine import generate_bio
 
@@ -56,6 +57,11 @@ class Section11Request(BaseModel):
     raw_response: str          # Full spreading prompt response text
     deal_id: Optional[str] = None  # If provided, updates existing deal
     borrower_name: Optional[str] = None
+
+
+class IOIFeedback(BaseModel):
+    institution: str
+    reasons: list = []
 
 
 class IOISubmission(BaseModel):
@@ -347,6 +353,20 @@ def get_iois(deal_id: str):
         raise HTTPException(status_code=404, detail=f"Deal {deal_id} not found")
     iois = load_iois(deal_id)
     return {"dealId": deal_id, "iois": iois, "count": len(iois)}
+
+
+@app.post("/deals/{deal_id}/ioi/feedback")
+def submit_ioi_feedback(deal_id: str, feedback: IOIFeedback):
+    result = save_ioi_feedback(deal_id, feedback.institution, feedback.reasons)
+    if not result:
+        raise HTTPException(status_code=404, detail="IOI not found for this institution")
+    return {"success": True, "dealId": deal_id}
+
+
+@app.get("/iois/declined")
+def get_declined_iois(institution: str):
+    items = load_declined_iois(institution)
+    return {"institution": institution, "declined": items, "count": len(items)}
 
 
 @app.post("/admin/generate-bio/{deal_id}")
