@@ -18,7 +18,7 @@ from deals_engine import run_analysis
 from deals_store import (
     save_deal, load_deal, list_deals,
     update_deal_status, save_ioi, load_iois, generate_deal_id,
-    save_ioi_feedback, load_declined_iois
+    save_ioi_feedback, load_declined_iois, clear_ioi_decline
 )
 from bio_engine import generate_bio
 
@@ -62,6 +62,10 @@ class Section11Request(BaseModel):
 class IOIFeedback(BaseModel):
     institution: str
     reasons: list = []
+
+
+class IOIReconsider(BaseModel):
+    institution: str
 
 
 class IOISubmission(BaseModel):
@@ -361,6 +365,12 @@ def submit_ioi_feedback(deal_id: str, feedback: IOIFeedback):
     if not result:
         raise HTTPException(status_code=404, detail="IOI not found for this institution")
     return {"success": True, "dealId": deal_id}
+
+
+@app.post("/deals/{deal_id}/ioi/reconsider")
+def reconsider_ioi(deal_id: str, body: IOIReconsider):
+    result = clear_ioi_decline(deal_id, body.institution)
+    return {"success": result, "dealId": deal_id, "institution": body.institution}
 
 
 @app.get("/iois/declined")

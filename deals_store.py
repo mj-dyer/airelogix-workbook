@@ -292,6 +292,47 @@ def save_ioi_feedback(deal_id: str, institution: str, reasons: list) -> bool:
         return updated
 
 
+def clear_ioi_decline(deal_id: str, institution: str) -> bool:
+    """Remove borrower decline markers from an IOI (borrower reconsidering)."""
+    if _USE_DB:
+        conn = _get_conn()
+        try:
+            rows = conn.run(
+                "SELECT data FROM iois WHERE deal_id=:deal_id AND institution=:institution",
+                deal_id=deal_id, institution=institution
+            )
+            if not rows:
+                return False
+            ioi = json.loads(rows[0][0])
+            ioi.pop("declinedByBorrower", None)
+            ioi.pop("declinedAt", None)
+            ioi.pop("declinedReasons", None)
+            conn.run(
+                "UPDATE iois SET data=:data WHERE deal_id=:deal_id AND institution=:institution",
+                data=json.dumps(ioi), deal_id=deal_id, institution=institution
+            )
+            return True
+        finally:
+            conn.close()
+    else:
+        _ensure_dirs()
+        p = os.path.join(IOIS_DIR, f"{deal_id}_iois.json")
+        if not os.path.exists(p):
+            return False
+        iois = json.load(open(p))
+        updated = False
+        for ioi in iois:
+            if ioi.get("institution") == institution:
+                ioi.pop("declinedByBorrower", None)
+                ioi.pop("declinedAt", None)
+                ioi.pop("declinedReasons", None)
+                updated = True
+        if updated:
+            with open(p, "w") as f:
+                json.dump(iois, f, indent=2)
+        return updated
+
+
 def load_declined_iois(institution: str) -> list:
     """Return deals where the given institution's IOI was declined by the borrower."""
     results = []
