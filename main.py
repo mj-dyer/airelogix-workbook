@@ -1274,6 +1274,8 @@ async def parse_spec(req: dict):
     if not base64_data:
         raise HTTPException(status_code=400, detail="No base64 data provided")
 
+    import json as _json, re as _re
+
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(
@@ -1281,6 +1283,7 @@ async def parse_spec(req: dict):
                 headers={
                     "x-api-key": ANTHROPIC_API_KEY,
                     "anthropic-version": "2023-06-01",
+                    "anthropic-beta": "pdfs-2024-09-25",
                     "content-type": "application/json"
                 },
                 json={
@@ -1324,7 +1327,7 @@ async def parse_spec(req: dict):
                                 "Honeywell MSP, Rolls-Royce CorporateCare, Rolls-Royce CorporateCare Enhanced, "
                                 "Smart Parts Plus. Return exact program name as listed, or null if not found. "
                                 "Use null for any field not found. No markdown, no explanation, just JSON."
-                            )
+                                )
                             }
                         ]
                     }]
@@ -1333,7 +1336,9 @@ async def parse_spec(req: dict):
             )
 
         if response.status_code != 200:
-            raise HTTPException(status_code=502, detail=f"Claude API error {response.status_code}")
+            body = response.text[:300]
+            print(f"[/parse-spec] Claude API {response.status_code}: {body}")
+            raise HTTPException(status_code=502, detail=f"Claude API error {response.status_code}: {body}")
 
         raw = response.json()
         text = ""
@@ -1341,12 +1346,17 @@ async def parse_spec(req: dict):
             if block.get("type") == "text":
                 text += block.get("text", "")
 
-        import json as _json, re as _re
+        # Strip markdown fences, then extract the JSON object
         text = _re.sub(r"```[a-z]*", "", text).replace("```", "").strip()
+        match = _re.search(r'\{.*\}', text, _re.DOTALL)
+        if match:
+            text = match.group(0)
         parsed = _json.loads(text)
         print(f"[/parse-spec] Parsed: {parsed}")
         return {"success": True, "data": parsed}
 
+    except HTTPException:
+        raise
     except Exception as e:
         err = traceback.format_exc()
         print(f"[/parse-spec] ERROR: {err}")
