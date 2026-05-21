@@ -47,7 +47,10 @@ class DealSubmission(BaseModel):
     loanPrefs: dict
     borrowerType: Optional[str] = "individual"
     transactionType: Optional[str] = "purchase"
-    profile: Optional[dict] = {}  # Borrower profile step — occupation, URLs, uploaded bio text, etc.
+    profile: Optional[dict] = {}
+    pgType: Optional[str] = None              # "full_recourse" | "non_recourse" (individual)
+    guarantorType: Optional[str] = None       # "just_me" | "spouse" | "unrelated" (individual)
+    principalPGAvailable: Optional[str] = None  # "yes" | "no" (corporate)
 
 class StatusUpdate(BaseModel):
     status: str
@@ -189,6 +192,9 @@ def submit_deal(submission: DealSubmission, background_tasks: BackgroundTasks):
             "borrowerType": data.get("borrowerType", "individual"),
             "profile": data.get("profile", {}),
             "loanPrefs": data.get("loanPrefs", {}),
+            "pgType": data.get("pgType") or "",
+            "guarantorType": data.get("guarantorType") or "",
+            "principalPGAvailable": data.get("principalPGAvailable") or "",
         }
 
         save_deal(deal)

@@ -521,6 +521,107 @@ def composite_to_rating(composite: float) -> tuple:
     return                       ("1",  "Elite — Best in Class",    "Approve — prioritize")
 
 
+# ── Guarantor package analysis ────────────────────────────────────────────────
+
+def compute_guarantor_package(
+    pg_type: str,
+    guarantor_type: str,
+    principal_pg_avail: str,
+    borrower_type: str,
+    liquid_assets: float,
+    net_worth: float,
+    loan_amount: float,
+    borrower_name: str,
+) -> dict:
+    is_corp = borrower_type in ("corporate", "private_company", "company")
+    liq_cov = round(liquid_assets / loan_amount, 2) if loan_amount > 0 else 0
+    nw_cov  = round(net_worth / loan_amount, 2) if loan_amount > 0 else 0
+
+    if is_corp:
+        if principal_pg_avail == "yes":
+            pkg_type   = "Corporate + Principal PG Available"
+            recourse   = "full_recourse"
+            composition = "Corporate entity + willing principals"
+            if nw_cov >= 3 and liq_cov >= 0.3:
+                strength = "Strong"
+            elif nw_cov >= 1:
+                strength = "Adequate"
+            else:
+                strength = "Limited"
+            narrative = (
+                "Principals have indicated willingness to provide personal guarantees if required or beneficial. "
+                "Combined with corporate balance sheet, this positions the credit competitively with full-recourse "
+                f"lenders. Entity net worth coverage {nw_cov:.1f}x loan; liquid coverage {liq_cov:.2f}x."
+            )
+        elif principal_pg_avail == "no":
+            pkg_type   = "Corporate Only — No Principal PG"
+            recourse   = "corporate_only"
+            composition = "Corporate entity — no personal guarantee"
+            strength   = "Corporate Recourse Only"
+            narrative  = (
+                "Borrower has indicated principals will not provide personal guarantees. Credit underwriting "
+                "relies on entity strength only. Lenders offering corporate non-recourse or limited-recourse "
+                "structures are the appropriate pool."
+            )
+        else:
+            pkg_type   = "Corporate — PG Availability Not Indicated"
+            recourse   = "unknown"
+            composition = "Not specified"
+            strength   = "Unknown"
+            narrative  = "Corporate borrower — guarantee structure not specified in application."
+    else:
+        # Individual borrower
+        if pg_type == "non_recourse":
+            pkg_type    = "Non-Recourse / Limited Recourse"
+            recourse    = "non_recourse"
+            composition = "No personal guarantee — collateral only"
+            strength    = "Non-Recourse Only"
+            narrative   = (
+                "Borrower has indicated a preference for non-recourse or limited recourse financing. "
+                "Aircraft collateral serves as primary (and sole) security. Lender pool is more limited "
+                "and advance rates will typically be more conservative (50–65% LTV)."
+            )
+        else:
+            # Full recourse
+            recourse = "full_recourse"
+            if guarantor_type == "spouse":
+                composition = "Individual + Spouse / Partner"
+                pkg_type    = "Full Recourse — Individual + Spouse"
+                multi_note  = "Borrower and spouse/partner co-guarantor presents maximum personal recourse coverage."
+            elif guarantor_type == "unrelated":
+                composition = "Individual + Co-Guarantor(s)"
+                pkg_type    = "Full Recourse — Multiple Guarantors"
+                multi_note  = "Multi-guarantor structure — borrower plus one or more unrelated co-guarantors."
+            else:
+                composition = "Individual guarantor"
+                pkg_type    = "Full Recourse — Individual Guarantor"
+                multi_note  = ""
+
+            if nw_cov >= 5 and liq_cov >= 0.5:
+                strength = "Strong"
+            elif nw_cov >= 2 and liq_cov >= 0.25:
+                strength = "Adequate"
+            else:
+                strength = "Limited"
+
+            cov_note = f"Net worth coverage {nw_cov:.1f}x loan; liquid coverage {liq_cov:.2f}x loan."
+            narrative = f"Full personal guarantee — {composition.lower()}. {cov_note}"
+            if multi_note:
+                narrative += f" {multi_note}"
+
+    return {
+        "packageType":       pkg_type,
+        "strength":          strength,
+        "recourseType":      recourse,
+        "guarantorComposition": composition,
+        "liquidCoverage":    liq_cov,
+        "netWorthCoverage":  nw_cov,
+        "statedRecoursePreference": pg_type or "",
+        "principalPGAvailable": principal_pg_avail or "",
+        "narrative":         narrative,
+    }
+
+
 # ── Main analysis engine ───────────────────────────────────────────────────────
 
 def run_analysis(submission: dict) -> dict:
@@ -538,6 +639,9 @@ def run_analysis(submission: dict) -> dict:
     financial = submission.get("financial", {})
     loan_prefs = submission.get("loanPrefs", {})
     borrower_type = submission.get("borrowerType", "individual")
+    pg_type = submission.get("pgType") or ""
+    guarantor_type = submission.get("guarantorType") or ""
+    principal_pg_avail = submission.get("principalPGAvailable") or ""
 
     first_name = personal.get("firstName", "")
     last_name = personal.get("lastName", "")
@@ -1114,6 +1218,10 @@ def run_analysis(submission: dict) -> dict:
         },
         "flags": flags,
         "guarantors": guarantors,
+        "guarantorPackage": compute_guarantor_package(
+            pg_type, guarantor_type, principal_pg_avail,
+            borrower_type, liquid_assets, stated_net_worth, loan_amount, borrower_name,
+        ),
         "lenderRouting": lender_routing,
         # New HNW raw-data fields — passed through from extraction/submission
         "agi": _parse_num(financial.get("agi", 0)) if not is_corporate else 0,
