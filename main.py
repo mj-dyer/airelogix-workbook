@@ -48,9 +48,10 @@ class DealSubmission(BaseModel):
     borrowerType: Optional[str] = "individual"
     transactionType: Optional[str] = "purchase"
     profile: Optional[dict] = {}
-    pgType: Optional[str] = None              # "full_recourse" | "non_recourse" (individual)
-    guarantorType: Optional[str] = None       # "just_me" | "spouse" | "unrelated" (individual)
-    principalPGAvailable: Optional[str] = None  # "yes" | "no" (corporate)
+    pgType: Optional[str] = None
+    guarantorType: Optional[str] = None
+    principalPGAvailable: Optional[str] = None
+    specSheet: Optional[dict] = None  # {base64: str, filename: str}
 
 class StatusUpdate(BaseModel):
     status: str
@@ -197,6 +198,9 @@ def submit_deal(submission: DealSubmission, background_tasks: BackgroundTasks):
             "principalPGAvailable": data.get("principalPGAvailable") or "",
         }
 
+        if submission.specSheet and submission.specSheet.get("base64"):
+            deal["specSheet"] = submission.specSheet
+
         save_deal(deal)
         print(f"[/deals] saved {deal_id}")
 
@@ -301,7 +305,19 @@ def get_deal(deal_id: str):
     result = dict(deal)
     result["anonId"] = _anon_id(deal_id)
     result.pop("borrowerEmail", None)
+    result.pop("specSheet", None)
     return result
+
+
+@app.get("/deals/{deal_id}/spec")
+def get_deal_spec(deal_id: str):
+    deal = load_deal(deal_id)
+    if not deal:
+        raise HTTPException(status_code=404, detail=f"Deal {deal_id} not found")
+    spec = deal.get("specSheet")
+    if not spec:
+        raise HTTPException(status_code=404, detail="No spec sheet on file for this deal")
+    return spec
 
 
 @app.patch("/deals/{deal_id}/status")
