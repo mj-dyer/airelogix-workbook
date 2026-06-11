@@ -7,6 +7,90 @@ import io, re, tempfile, os, traceback
 from datetime import datetime, timezone
 import httpx
 from fastapi import FastAPI, HTTPException, BackgroundTasks
+
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
+RESEND_FROM = "Vaero Finance <noreply@vaerofinance.com>"
+
+def _send_email(to: str, subject: str, html: str):
+    if not RESEND_API_KEY or not to:
+        return
+    try:
+        httpx.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
+            json={"from": RESEND_FROM, "to": [to], "subject": subject, "html": html},
+            timeout=8
+        )
+    except Exception as e:
+        print(f"[email] send failed: {e}")
+
+def _email_deal_received(to: str, deal_id: str, aircraft: str, loan_amount: int):
+    html = f"""
+<div style="font-family:sans-serif;max-width:560px;margin:0 auto;color:#1a1a2e;padding:32px 24px">
+  <img src="https://dev.vaerofinance.com/vaero_clean_logo_transparent.png" height="48" style="margin-bottom:24px"/>
+  <h2 style="font-size:22px;font-weight:600;margin-bottom:8px;color:#071428">Application Received</h2>
+  <p style="color:#4a6480;font-size:15px;line-height:1.6;margin-bottom:24px">
+    Your financing application for the <strong>{aircraft}</strong> has been received and is under review.
+    We're building your complete credit package and will notify you when it's been distributed to qualified lenders.
+  </p>
+  <div style="background:#f4f6f9;border-radius:8px;padding:16px 20px;margin-bottom:24px">
+    <div style="font-size:12px;color:#8a9ab0;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px">Application Reference</div>
+    <div style="font-size:17px;font-weight:700;color:#071428;font-family:monospace">{deal_id}</div>
+  </div>
+  <p style="color:#8a9ab0;font-size:12px;line-height:1.6">
+    Questions? Reply to this email or contact us at <a href="mailto:originations@vaerofinance.com" style="color:#c8a96e">originations@vaerofinance.com</a>
+  </p>
+  <div style="border-top:1px solid #e8ecf0;margin-top:32px;padding-top:16px;font-size:11px;color:#b0bcc8">
+    Vaero Finance · Aviation Finance Intelligence · <a href="https://vaerofinance.com" style="color:#c8a96e">vaerofinance.com</a>
+  </div>
+</div>"""
+    _send_email(to, f"Application Received — {aircraft}", html)
+
+def _email_deal_distributed(to: str, deal_id: str, aircraft: str, lender_count: int):
+    html = f"""
+<div style="font-family:sans-serif;max-width:560px;margin:0 auto;color:#1a1a2e;padding:32px 24px">
+  <img src="https://dev.vaerofinance.com/vaero_clean_logo_transparent.png" height="48" style="margin-bottom:24px"/>
+  <h2 style="font-size:22px;font-weight:600;margin-bottom:8px;color:#071428">Your Deal Is Live</h2>
+  <p style="color:#4a6480;font-size:15px;line-height:1.6;margin-bottom:24px">
+    Your credit package for the <strong>{aircraft}</strong> has been distributed to <strong>{lender_count} qualified lender{"s" if lender_count != 1 else ""}</strong>.
+    Lenders are reviewing your package — you'll hear from us as term sheets come in.
+  </p>
+  <div style="background:#f4f6f9;border-radius:8px;padding:16px 20px;margin-bottom:24px">
+    <div style="font-size:12px;color:#8a9ab0;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px">Application Reference</div>
+    <div style="font-size:17px;font-weight:700;color:#071428;font-family:monospace">{deal_id}</div>
+  </div>
+  <p style="color:#4a6480;font-size:14px;line-height:1.6">
+    Your identity remains protected. Lenders see your financial profile and aircraft details — not your name — until you choose to engage.
+  </p>
+  <div style="border-top:1px solid #e8ecf0;margin-top:32px;padding-top:16px;font-size:11px;color:#b0bcc8">
+    Vaero Finance · Aviation Finance Intelligence · <a href="https://vaerofinance.com" style="color:#c8a96e">vaerofinance.com</a>
+  </div>
+</div>"""
+    _send_email(to, f"Your Deal Is Live — {lender_count} Lender{"s" if lender_count != 1 else ""} Reviewing", html)
+
+def _email_ioi_received(to: str, deal_id: str, aircraft: str, institution: str):
+    html = f"""
+<div style="font-family:sans-serif;max-width:560px;margin:0 auto;color:#1a1a2e;padding:32px 24px">
+  <img src="https://dev.vaerofinance.com/vaero_clean_logo_transparent.png" height="48" style="margin-bottom:24px"/>
+  <h2 style="font-size:22px;font-weight:600;margin-bottom:8px;color:#071428">Term Sheet Received</h2>
+  <p style="color:#4a6480;font-size:15px;line-height:1.6;margin-bottom:24px">
+    A lender has submitted an Indication of Interest on your <strong>{aircraft}</strong> financing.
+    Log in to your Vaero Finance dashboard to review the terms.
+  </p>
+  <div style="background:#f4f6f9;border-radius:8px;padding:16px 20px;margin-bottom:24px">
+    <div style="font-size:12px;color:#8a9ab0;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px">Application Reference</div>
+    <div style="font-size:17px;font-weight:700;color:#071428;font-family:monospace">{deal_id}</div>
+  </div>
+  <div style="margin-bottom:24px">
+    <a href="https://dev.vaerofinance.com" style="display:inline-block;background:#c8a96e;color:#fff;font-weight:600;font-size:14px;padding:12px 28px;border-radius:4px;text-decoration:none;letter-spacing:0.04em">
+      View Term Sheet →
+    </a>
+  </div>
+  <div style="border-top:1px solid #e8ecf0;margin-top:32px;padding-top:16px;font-size:11px;color:#b0bcc8">
+    Vaero Finance · Aviation Finance Intelligence · <a href="https://vaerofinance.com" style="color:#c8a96e">vaerofinance.com</a>
+  </div>
+</div>"""
+    _send_email(to, f"Term Sheet Received — {aircraft}", html)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -214,6 +298,17 @@ def submit_deal(submission: DealSubmission, background_tasks: BackgroundTasks):
             analysis,
         )
 
+        # Confirmation email to borrower
+        borrower_email = personal.get("email", "")
+        if borrower_email:
+            background_tasks.add_task(
+                _email_deal_received,
+                borrower_email,
+                deal_id,
+                deal["aircraft"],
+                analysis["transaction"]["loanAmount"],
+            )
+
         return {
             "success": True,
             "dealId": deal_id,
@@ -335,7 +430,7 @@ def patch_status(deal_id: str, update: StatusUpdate):
 
 
 @app.post("/deals/{deal_id}/distribute")
-def distribute_deal(deal_id: str, payload: dict):
+def distribute_deal(deal_id: str, payload: dict, background_tasks: BackgroundTasks):
     deal = load_deal(deal_id)
     if not deal:
         raise HTTPException(status_code=404, detail=f"Deal {deal_id} not found")
@@ -344,8 +439,18 @@ def distribute_deal(deal_id: str, payload: dict):
         deal["distributedAt"] = datetime.now(timezone.utc).isoformat()
         deal["status"] = "package_distributed"
         save_deal(deal)
+        distributed_count = len([s for s in deal["lenderSelections"] if s.get("tag") != "exclude"])
+        borrower_email = deal.get("borrowerEmail", "")
+        if borrower_email:
+            background_tasks.add_task(
+                _email_deal_distributed,
+                borrower_email,
+                deal_id,
+                deal.get("aircraft", "your aircraft"),
+                distributed_count,
+            )
         return {"success": True, "dealId": deal_id, "status": "package_distributed",
-                "distributedCount": len([s for s in deal["lenderSelections"] if s.get("tag") != "exclude"])}
+                "distributedCount": distributed_count}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -360,13 +465,22 @@ def archive_deal(deal_id: str):
 
 
 @app.post("/deals/{deal_id}/ioi")
-def submit_ioi(deal_id: str, ioi: IOISubmission):
+def submit_ioi(deal_id: str, ioi: IOISubmission, background_tasks: BackgroundTasks):
     deal = load_deal(deal_id)
     if not deal:
         raise HTTPException(status_code=404, detail=f"Deal {deal_id} not found")
     try:
         ioi_data = ioi.dict()
         ioi_id = save_ioi(deal_id, ioi_data)
+        borrower_email = deal.get("borrowerEmail", "")
+        if borrower_email:
+            background_tasks.add_task(
+                _email_ioi_received,
+                borrower_email,
+                deal_id,
+                deal.get("aircraft", "your aircraft"),
+                ioi_data.get("institution", "A lender"),
+            )
         return {"success": True, "ioiId": ioi_id, "dealId": deal_id, "refNum": f"IOI-{ioi_id}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
