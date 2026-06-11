@@ -300,6 +300,7 @@ def submit_deal(submission: DealSubmission, background_tasks: BackgroundTasks):
 
         # Confirmation email to borrower
         borrower_email = personal.get("email", "")
+        print(f"[email] borrower_email={borrower_email!r}")
         if borrower_email:
             background_tasks.add_task(
                 _email_deal_received,
@@ -308,6 +309,7 @@ def submit_deal(submission: DealSubmission, background_tasks: BackgroundTasks):
                 deal["aircraft"],
                 analysis["transaction"]["loanAmount"],
             )
+            print(f"[email] deal_received queued for {borrower_email}")
 
         return {
             "success": True,
