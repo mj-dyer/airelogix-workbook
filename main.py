@@ -12,15 +12,20 @@ RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 RESEND_FROM = "Vaero Finance <noreply@vaerofinance.com>"
 
 def _send_email(to: str, subject: str, html: str):
-    if not RESEND_API_KEY or not to:
+    if not RESEND_API_KEY:
+        print(f"[email] RESEND_API_KEY not set — skipping send to {to}")
+        return
+    if not to:
+        print("[email] no recipient — skipping send")
         return
     try:
-        httpx.post(
+        r = httpx.post(
             "https://api.resend.com/emails",
             headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
             json={"from": RESEND_FROM, "to": [to], "subject": subject, "html": html},
             timeout=8
         )
+        print(f"[email] sent to {to} — status={r.status_code} body={r.text[:200]}")
     except Exception as e:
         print(f"[email] send failed: {e}")
 
