@@ -12,31 +12,19 @@ RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 RESEND_FROM = "Vaero Finance <noreply@vaerofinance.com>"
 
 def _send_email(to: str, subject: str, html: str):
-    if not RESEND_API_KEY:
-        print(f"[email] RESEND_API_KEY not set — skipping send to {to}")
-        return
-    if not to:
-        print("[email] no recipient — skipping send")
+    if not RESEND_API_KEY or not to:
         return
     try:
-        r = httpx.post(
+        httpx.post(
             "https://api.resend.com/emails",
             headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
             json={"from": RESEND_FROM, "to": [to], "subject": subject, "html": html},
             timeout=8
         )
-        print(f"[email] sent to {to} — status={r.status_code} body={r.text[:200]}")
     except Exception as e:
         print(f"[email] send failed: {e}")
 
 def _email_deal_received(to: str, deal_id: str, aircraft: str, loan_amount: int):
-    print(f"[email] _email_deal_received called for {to}")
-    try:
-     _email_deal_received_inner(to, deal_id, aircraft, loan_amount)
-    except Exception as e:
-        print(f"[email] _email_deal_received crashed: {e}")
-
-def _email_deal_received_inner(to: str, deal_id: str, aircraft: str, loan_amount: int):
     html = f"""
 <div style="font-family:sans-serif;max-width:560px;margin:0 auto;color:#1a1a2e;padding:32px 24px">
   <img src="https://dev.vaerofinance.com/vaero_clean_logo_transparent.png" height="48" style="margin-bottom:24px"/>
