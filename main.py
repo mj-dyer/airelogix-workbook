@@ -30,6 +30,13 @@ def _send_email(to: str, subject: str, html: str):
         print(f"[email] send failed: {e}")
 
 def _email_deal_received(to: str, deal_id: str, aircraft: str, loan_amount: int):
+    print(f"[email] _email_deal_received called for {to}")
+    try:
+     _email_deal_received_inner(to, deal_id, aircraft, loan_amount)
+    except Exception as e:
+        print(f"[email] _email_deal_received crashed: {e}")
+
+def _email_deal_received_inner(to: str, deal_id: str, aircraft: str, loan_amount: int):
     html = f"""
 <div style="font-family:sans-serif;max-width:560px;margin:0 auto;color:#1a1a2e;padding:32px 24px">
   <img src="https://dev.vaerofinance.com/vaero_clean_logo_transparent.png" height="48" style="margin-bottom:24px"/>
