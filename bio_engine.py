@@ -12,7 +12,7 @@ from typing import Optional
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
-BIO_MODEL = "claude-sonnet-4-20250514"
+BIO_MODEL = "claude-sonnet-4-6"
 MAX_TOOL_CALLS = 8
 MAX_PAGE_CHARS = 5000  # Truncate fetched pages to avoid token overflow and rate limits
 
