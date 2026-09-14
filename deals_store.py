@@ -52,7 +52,12 @@ def _ensure_schema():
                 data         TEXT NOT NULL
             )
         """)
+        # Ties a deal to the Supabase auth user (borrower) who submitted it,
+        # so the backend can authorize "give me my own deals" by JWT subject
+        # instead of trusting a client-supplied email.
+        conn.run("ALTER TABLE deals ADD COLUMN IF NOT EXISTS borrower_user_id TEXT")
         conn.run("CREATE INDEX IF NOT EXISTS idx_deals_created ON deals(created_at DESC)")
+        conn.run("CREATE INDEX IF NOT EXISTS idx_deals_borrower_user ON deals(borrower_user_id)")
         conn.run("CREATE INDEX IF NOT EXISTS idx_iois_deal ON iois(deal_id)")
     finally:
         conn.close()
@@ -89,19 +94,21 @@ def save_deal(deal: dict) -> str:
         conn = _get_conn()
         try:
             conn.run("""
-                INSERT INTO deals (deal_id, status, received_date, ioi_count, data)
-                VALUES (:deal_id, :status, :received_date, :ioi_count, :data)
+                INSERT INTO deals (deal_id, status, received_date, ioi_count, data, borrower_user_id)
+                VALUES (:deal_id, :status, :received_date, :ioi_count, :data, :borrower_user_id)
                 ON CONFLICT (deal_id) DO UPDATE SET
                     status=EXCLUDED.status,
                     received_date=EXCLUDED.received_date,
                     ioi_count=EXCLUDED.ioi_count,
                     data=EXCLUDED.data,
+                    borrower_user_id=COALESCE(EXCLUDED.borrower_user_id, deals.borrower_user_id),
                     updated_at=NOW()
             """, deal_id=deal_id,
                 status=deal.get("status", "under_review"),
                 received_date=deal.get("receivedDate", ""),
                 ioi_count=deal.get("ioiCount", 0),
-                data=json.dumps(deal))
+                data=json.dumps(deal),
+                borrower_user_id=deal.get("borrowerUserId"))
         finally:
             conn.close()
     else:
@@ -149,6 +156,36 @@ def list_deals() -> list:
             if f.endswith(".json"):
                 try: deals.append(json.load(open(os.path.join(DEALS_DIR, f))))
                 except: pass
+        return deals
+
+def list_deals_by_user(borrower_user_id: str) -> list:
+    if _USE_DB:
+        conn = _get_conn()
+        try:
+            rows = conn.run(
+                "SELECT data, ioi_count, status FROM deals WHERE borrower_user_id=:uid ORDER BY created_at DESC",
+                uid=borrower_user_id,
+            )
+            result = []
+            for r in rows:
+                d = json.loads(r[0])
+                d["ioiCount"] = r[1]
+                d["status"] = r[2]
+                result.append(d)
+            return result
+        finally:
+            conn.close()
+    else:
+        _ensure_dirs()
+        deals = []
+        for f in sorted(os.listdir(DEALS_DIR), reverse=True):
+            if f.endswith(".json"):
+                try:
+                    d = json.load(open(os.path.join(DEALS_DIR, f)))
+                    if d.get("borrowerUserId") == borrower_user_id:
+                        deals.append(d)
+                except Exception:
+                    pass
         return deals
 
 def update_deal_status(deal_id: str, status: str) -> Optional[dict]:

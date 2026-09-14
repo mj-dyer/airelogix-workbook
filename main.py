@@ -6,7 +6,7 @@ FastAPI -- workbook generation + deal management
 import io, re, tempfile, os, traceback
 from datetime import datetime, timezone
 import httpx
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Depends
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -104,7 +104,7 @@ from generate_workbook import generate_workbook
 from generate_memo import generate_memo
 from deals_engine import run_analysis
 from deals_store import (
-    save_deal, load_deal, list_deals,
+    save_deal, load_deal, list_deals, list_deals_by_user,
     update_deal_status, save_ioi, load_iois, generate_deal_id,
     save_ioi_feedback, load_declined_iois, clear_ioi_decline
 )
@@ -139,6 +139,38 @@ app.add_middleware(SlowAPIMiddleware)
 async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
     from fastapi.responses import JSONResponse
     return JSONResponse(status_code=429, content={"detail": "Too many requests — please slow down and try again shortly."})
+
+# ── Auth ───────────────────────────────────────────────────────────────────────
+# Verifies the Supabase-issued JWT that both the borrower app and lender portal
+# attach as "Authorization: Bearer <token>". This project's Supabase JWTs are
+# HS256 (shared-secret), not the newer JWKS/public-key scheme, so verification
+# needs the actual JWT secret from the Supabase dashboard (Settings > API >
+# JWT Settings), set here as SUPABASE_JWT_SECRET. Until that env var is set on
+# Railway, every request through this dependency fails closed (503, not a silent
+# bypass) so a missing secret can't accidentally leave routes unprotected.
+import jwt as _pyjwt
+
+SUPABASE_JWT_SECRET = os.environ.get("SUPABASE_JWT_SECRET", "")
+
+def get_current_user(request: Request) -> dict:
+    if not SUPABASE_JWT_SECRET:
+        raise HTTPException(status_code=503, detail="Auth not configured on the server")
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or malformed Authorization header")
+    token = auth_header[len("Bearer "):]
+    try:
+        payload = _pyjwt.decode(
+            token,
+            SUPABASE_JWT_SECRET,
+            algorithms=["HS256"],
+            audience="authenticated",
+        )
+    except _pyjwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Session expired — please log in again")
+    except _pyjwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid session")
+    return payload  # payload["sub"] = Supabase user UUID, payload["email"] = email
 
 class WorkbookRequest(BaseModel):
     analysis: Any
@@ -256,7 +288,7 @@ def generate_credit_memo(req: MemoRequest):
 
 @app.post("/deals")
 @limiter.limit("10/hour")
-def submit_deal(request: Request, submission: DealSubmission, background_tasks: BackgroundTasks):
+def submit_deal(request: Request, submission: DealSubmission, background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
     try:
         data = submission.dict()
         print(f"[/deals] keys={list(data.keys())}")
@@ -283,6 +315,7 @@ def submit_deal(request: Request, submission: DealSubmission, background_tasks: 
             "receivedDate": analysis["analysisDate"],
             "borrowerName": analysis["borrowerName"],
             "borrowerEmail": personal.get("email", ""),
+            "borrowerUserId": user["sub"],
             "aircraft": (str(aircraft.get("year","")) + " " + str(aircraft.get("make","")) + " " + str(aircraft.get("model",""))).strip(),
             "aircraftSub": (
                 str(aircraft.get("engineProgram","No program")) + " · " +
@@ -354,7 +387,7 @@ def submit_deal(request: Request, submission: DealSubmission, background_tasks: 
 
 
 @app.get("/deals")
-def get_deals():
+def get_deals(user: dict = Depends(get_current_user)):
     try:
         deals = list_deals()
         queue = []
@@ -380,17 +413,13 @@ def get_deals():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/deals/by-email")
-def get_deal_by_email(email: str):
+@app.get("/deals/mine")
+def get_my_deal(user: dict = Depends(get_current_user)):
     try:
-        deals = list_deals()
-        email_lower = email.strip().lower()
-        match = next(
-            (d for d in deals if d.get("borrowerEmail", "").strip().lower() == email_lower),
-            None,
-        )
-        if not match:
-            raise HTTPException(status_code=404, detail="No application found for this email address.")
+        deals = list_deals_by_user(user["sub"])
+        if not deals:
+            raise HTTPException(status_code=404, detail="No application found for this account.")
+        match = deals[0]  # most recent — list_deals_by_user is already ordered by created_at DESC
         analysis = match.get("analysis", {})
         return {
             "id": match["dealId"],
@@ -420,7 +449,7 @@ def get_deal_by_email(email: str):
 
 
 @app.get("/deals/{deal_id}")
-def get_deal(deal_id: str):
+def get_deal(deal_id: str, user: dict = Depends(get_current_user)):
     deal = load_deal(deal_id)
     if not deal:
         raise HTTPException(status_code=404, detail=f"Deal {deal_id} not found")
@@ -433,7 +462,7 @@ def get_deal(deal_id: str):
 
 
 @app.get("/deals/{deal_id}/spec")
-def get_deal_spec(deal_id: str):
+def get_deal_spec(deal_id: str, user: dict = Depends(get_current_user)):
     deal = load_deal(deal_id)
     if not deal:
         raise HTTPException(status_code=404, detail=f"Deal {deal_id} not found")
@@ -444,7 +473,7 @@ def get_deal_spec(deal_id: str):
 
 
 @app.patch("/deals/{deal_id}/status")
-def patch_status(deal_id: str, update: StatusUpdate):
+def patch_status(deal_id: str, update: StatusUpdate, user: dict = Depends(get_current_user)):
     valid = [
         "application_submitted", "under_review", "select_lender_pool",
         "package_distributed", "ioi_received", "lender_selected", "closed", "passed", "archived"
@@ -458,7 +487,7 @@ def patch_status(deal_id: str, update: StatusUpdate):
 
 
 @app.post("/deals/{deal_id}/distribute")
-def distribute_deal(deal_id: str, payload: dict, background_tasks: BackgroundTasks):
+def distribute_deal(deal_id: str, payload: dict, background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
     deal = load_deal(deal_id)
     if not deal:
         raise HTTPException(status_code=404, detail=f"Deal {deal_id} not found")
@@ -484,7 +513,7 @@ def distribute_deal(deal_id: str, payload: dict, background_tasks: BackgroundTas
 
 
 @app.delete("/deals/{deal_id}")
-def archive_deal(deal_id: str):
+def archive_deal(deal_id: str, user: dict = Depends(get_current_user)):
     """Archive a deal — removes from active queue, preserves record."""
     deal = update_deal_status(deal_id, "archived")
     if not deal:
@@ -493,7 +522,7 @@ def archive_deal(deal_id: str):
 
 
 @app.post("/deals/{deal_id}/ioi")
-def submit_ioi(deal_id: str, ioi: IOISubmission, background_tasks: BackgroundTasks):
+def submit_ioi(deal_id: str, ioi: IOISubmission, background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
     deal = load_deal(deal_id)
     if not deal:
         raise HTTPException(status_code=404, detail=f"Deal {deal_id} not found")
@@ -515,7 +544,7 @@ def submit_ioi(deal_id: str, ioi: IOISubmission, background_tasks: BackgroundTas
 
 
 @app.get("/deals/{deal_id}/ioi")
-def get_iois(deal_id: str):
+def get_iois(deal_id: str, user: dict = Depends(get_current_user)):
     deal = load_deal(deal_id)
     if not deal:
         raise HTTPException(status_code=404, detail=f"Deal {deal_id} not found")
@@ -524,7 +553,7 @@ def get_iois(deal_id: str):
 
 
 @app.post("/deals/{deal_id}/ioi/feedback")
-def submit_ioi_feedback(deal_id: str, feedback: IOIFeedback):
+def submit_ioi_feedback(deal_id: str, feedback: IOIFeedback, user: dict = Depends(get_current_user)):
     result = save_ioi_feedback(deal_id, feedback.institution, feedback.reasons)
     if not result:
         raise HTTPException(status_code=404, detail="IOI not found for this institution")
@@ -532,20 +561,20 @@ def submit_ioi_feedback(deal_id: str, feedback: IOIFeedback):
 
 
 @app.post("/deals/{deal_id}/ioi/reconsider")
-def reconsider_ioi(deal_id: str, body: IOIReconsider):
+def reconsider_ioi(deal_id: str, body: IOIReconsider, user: dict = Depends(get_current_user)):
     result = clear_ioi_decline(deal_id, body.institution)
     return {"success": result, "dealId": deal_id, "institution": body.institution}
 
 
 @app.get("/iois/declined")
-def get_declined_iois(institution: str):
+def get_declined_iois(institution: str, user: dict = Depends(get_current_user)):
     items = load_declined_iois(institution)
     return {"institution": institution, "declined": items, "count": len(items)}
 
 
 @app.post("/admin/generate-bio/{deal_id}")
 @limiter.limit("20/hour")
-async def admin_generate_bio(request: Request, deal_id: str, background_tasks: BackgroundTasks):
+async def admin_generate_bio(request: Request, deal_id: str, background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
     """Re-trigger borrower bio research for an existing deal. Useful for debugging and demo deals."""
     deal = load_deal(deal_id)
     if not deal:
@@ -1018,7 +1047,7 @@ def _liquidity_label(r: float) -> str:
 
 
 @app.post("/ingest-section11")
-async def ingest_section11(req: Section11Request, background_tasks: BackgroundTasks):
+async def ingest_section11(req: Section11Request, background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
     """
     Receive raw spreading prompt output, extract Section 11 JSON,
     map to analysis format, and store/update the deal.
