@@ -6,7 +6,11 @@ FastAPI -- workbook generation + deal management
 import io, re, tempfile, os, traceback
 from datetime import datetime, timezone
 import httpx
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 RESEND_FROM = "Vaero Finance <noreply@vaerofinance.com>"
@@ -108,13 +112,33 @@ from bio_engine import generate_bio
 
 app = FastAPI(title="AireLogix API", version="0.2.0")
 
+ALLOWED_ORIGINS = [
+    "https://vaerofinance.com",
+    "https://dev.vaerofinance.com",
+    "https://lender.vaerofinance.com",
+    "https://aire-logix-brand-preview.vercel.app",
+    "https://lender-brand-preview.vercel.app",
+    "http://localhost:8123",
+    "http://localhost:8177",
+    "http://localhost:3000",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_middleware(SlowAPIMiddleware)
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    from fastapi.responses import JSONResponse
+    return JSONResponse(status_code=429, content={"detail": "Too many requests — please slow down and try again shortly."})
 
 class WorkbookRequest(BaseModel):
     analysis: Any
@@ -231,7 +255,8 @@ def generate_credit_memo(req: MemoRequest):
 
 
 @app.post("/deals")
-def submit_deal(submission: DealSubmission, background_tasks: BackgroundTasks):
+@limiter.limit("10/hour")
+def submit_deal(request: Request, submission: DealSubmission, background_tasks: BackgroundTasks):
     try:
         data = submission.dict()
         print(f"[/deals] keys={list(data.keys())}")
@@ -401,6 +426,7 @@ def get_deal(deal_id: str):
         raise HTTPException(status_code=404, detail=f"Deal {deal_id} not found")
     result = dict(deal)
     result["anonId"] = _anon_id(deal_id)
+    result["hasSpecSheet"] = bool(result.get("specSheet"))
     result.pop("borrowerEmail", None)
     result.pop("specSheet", None)
     return result
@@ -518,7 +544,8 @@ def get_declined_iois(institution: str):
 
 
 @app.post("/admin/generate-bio/{deal_id}")
-async def admin_generate_bio(deal_id: str, background_tasks: BackgroundTasks):
+@limiter.limit("20/hour")
+async def admin_generate_bio(request: Request, deal_id: str, background_tasks: BackgroundTasks):
     """Re-trigger borrower bio research for an existing deal. Useful for debugging and demo deals."""
     deal = load_deal(deal_id)
     if not deal:
@@ -529,101 +556,6 @@ async def admin_generate_bio(deal_id: str, background_tasks: BackgroundTasks):
     profile_data = deal.get("profile", {})
     background_tasks.add_task(generate_bio, deal_id, borrower_name, borrower_type, profile_data, analysis)
     return {"status": "queued", "dealId": deal_id, "borrowerName": borrower_name}
-
-
-@app.post("/admin/debug-bio/{deal_id}")
-async def admin_debug_bio(deal_id: str):
-    """
-    Run bio research synchronously and return the raw result for debugging.
-    Does NOT save to the deal record — diagnostic only.
-    """
-    import os
-    import httpx as _httpx
-    from bio_engine import _build_research_prompt, ANTHROPIC_API_KEY, ANTHROPIC_URL, BIO_MODEL, FETCH_URL_TOOL, _extract_json
-
-    deal = load_deal(deal_id)
-    if not deal:
-        raise HTTPException(status_code=404, detail=f"Deal {deal_id} not found")
-
-    if not ANTHROPIC_API_KEY:
-        return {"error": "ANTHROPIC_API_KEY not set", "dealId": deal_id}
-
-    analysis = deal.get("analysis", {})
-    borrower_name = analysis.get("borrowerName", "Unknown")
-    borrower_type = deal.get("borrowerType", "individual")
-    profile_data = deal.get("profile", {})
-
-    # Step 1: Quick API connectivity test
-    try:
-        async with _httpx.AsyncClient(timeout=30.0) as client:
-            test_resp = await client.post(
-                ANTHROPIC_URL,
-                headers={
-                    "x-api-key": ANTHROPIC_API_KEY,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                json={
-                    "model": BIO_MODEL,
-                    "max_tokens": 50,
-                    "messages": [{"role": "user", "content": "Reply with just: OK"}],
-                },
-            )
-            api_status = test_resp.status_code
-            api_snippet = test_resp.text[:300]
-    except Exception as e:
-        return {"error": f"Claude API connectivity failed: {e}", "dealId": deal_id}
-
-    if api_status != 200:
-        return {
-            "error": f"Claude API returned {api_status}",
-            "apiResponse": api_snippet,
-            "dealId": deal_id,
-        }
-
-    # Step 2: Single-turn call — ask for JSON with minimal research context
-    prompt = _build_research_prompt(borrower_name, borrower_type, profile_data, analysis)
-    prompt_preview = prompt[:500]
-
-    try:
-        async with _httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(
-                ANTHROPIC_URL,
-                headers={
-                    "x-api-key": ANTHROPIC_API_KEY,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                json={
-                    "model": BIO_MODEL,
-                    "max_tokens": 4000,
-                    "tools": [FETCH_URL_TOOL],
-                    "messages": [{"role": "user", "content": prompt}],
-                },
-            )
-            resp_status = resp.status_code
-            resp_data = resp.json() if resp_status == 200 else None
-            resp_snippet = resp.text[:500] if resp_status != 200 else None
-    except Exception as e:
-        return {"error": f"Bio prompt call failed: {e}", "dealId": deal_id}
-
-    stop_reason = resp_data.get("stop_reason") if resp_data else None
-    content_types = [b.get("type") for b in resp_data.get("content", [])] if resp_data else []
-    first_text = next((b.get("text","")[:800] for b in (resp_data or {}).get("content",[]) if b.get("type")=="text"), None)
-
-    return {
-        "dealId": deal_id,
-        "borrowerName": borrower_name,
-        "borrowerType": borrower_type,
-        "profileDataKeys": list(profile_data.keys()),
-        "apiConnectivity": "ok",
-        "firstTurnStatus": resp_status,
-        "firstTurnStopReason": stop_reason,
-        "firstTurnContentTypes": content_types,
-        "firstTurnTextPreview": first_text,
-        "errorSnippet": resp_snippet,
-        "promptPreview": prompt_preview,
-    }
 
 
 def _anon_id(deal_id: str) -> str:
@@ -1165,7 +1097,8 @@ async def ingest_section11(req: Section11Request, background_tasks: BackgroundTa
 
 
 @app.post("/extract")
-async def extract_documents(req: ExtractionRequest):
+@limiter.limit("30/hour")
+async def extract_documents(request: Request, req: ExtractionRequest):
     if not ANTHROPIC_API_KEY:
         raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not configured")
 
@@ -1304,12 +1237,6 @@ async def extract_documents(req: ExtractionRequest):
         return {"success": False, "summary": _empty_summary(), "error": str(e)}
 
 
-@app.post("/extract/debug")
-async def extract_debug(req: ExtractionRequest):
-    """Returns raw Claude response for debugging — do not expose in production."""
-    result = await extract_documents(req)
-    return result
-
 
 def _empty_summary() -> dict:
     return {
@@ -1403,7 +1330,8 @@ def _build_summary(extracted: dict) -> dict:
 
 
 @app.post("/parse-spec")
-async def parse_spec(req: dict):
+@limiter.limit("30/hour")
+async def parse_spec(request: Request, req: dict):
     """Parse aircraft spec sheet PDF and return structured fields."""
     if not ANTHROPIC_API_KEY:
         raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not configured")
