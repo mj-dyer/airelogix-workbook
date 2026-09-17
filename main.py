@@ -142,15 +142,21 @@ async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
 
 # ── Auth ───────────────────────────────────────────────────────────────────────
 # Verifies the Supabase-issued JWT that both the borrower app and lender portal
-# attach as "Authorization: Bearer <token>". This project's Supabase JWTs are
-# HS256 (shared-secret), not the newer JWKS/public-key scheme, so verification
-# needs the actual JWT secret from the Supabase dashboard (Settings > API >
-# JWT Settings), set here as SUPABASE_JWT_SECRET. Until that env var is set on
-# Railway, every request through this dependency fails closed (503, not a silent
-# bypass) so a missing secret can't accidentally leave routes unprotected.
+# attach as "Authorization: Bearer <token>". Supabase signs session tokens with
+# an asymmetric key (ES256) identified by a "kid" in the token header — the
+# actual public key has to be looked up from Supabase's JWKS endpoint per-token,
+# not a single static secret. SUPABASE_JWT_SECRET (the legacy HS256 shared
+# secret) is kept as a fallback for any pre-existing HS256 tokens, but new
+# tokens all come through as ES256 now. Until the JWKS lookup or the legacy
+# secret can verify a token, every request through this dependency fails closed
+# (503 if nothing is configured at all, 401 otherwise) rather than silently
+# bypassing auth.
 import jwt as _pyjwt
+from jwt import PyJWKClient
 
 SUPABASE_JWT_SECRET = os.environ.get("SUPABASE_JWT_SECRET", "")
+SUPABASE_PROJECT_URL = "https://nubwhrwmxibfrmfitucg.supabase.co"
+_jwks_client = PyJWKClient(f"{SUPABASE_PROJECT_URL}/auth/v1/.well-known/jwks.json")
 
 def get_current_user(request: Request) -> dict:
     if not SUPABASE_JWT_SECRET:
@@ -160,15 +166,25 @@ def get_current_user(request: Request) -> dict:
         raise HTTPException(status_code=401, detail="Missing or malformed Authorization header")
     token = auth_header[len("Bearer "):]
     try:
-        payload = _pyjwt.decode(
-            token,
-            SUPABASE_JWT_SECRET,
-            algorithms=["HS256"],
-            audience="authenticated",
-        )
+        alg = _pyjwt.get_unverified_header(token).get("alg", "")
+        if alg == "HS256":
+            payload = _pyjwt.decode(
+                token,
+                SUPABASE_JWT_SECRET,
+                algorithms=["HS256"],
+                audience="authenticated",
+            )
+        else:
+            signing_key = _jwks_client.get_signing_key_from_jwt(token)
+            payload = _pyjwt.decode(
+                token,
+                signing_key.key,
+                algorithms=[alg or "ES256"],
+                audience="authenticated",
+            )
     except _pyjwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Session expired — please log in again")
-    except _pyjwt.InvalidTokenError as e:
+    except _pyjwt.PyJWTError as e:
         try:
             unverified = _pyjwt.decode(token, options={"verify_signature": False})
             header = _pyjwt.get_unverified_header(token)
