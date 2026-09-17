@@ -168,7 +168,15 @@ def get_current_user(request: Request) -> dict:
         )
     except _pyjwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Session expired — please log in again")
-    except _pyjwt.InvalidTokenError:
+    except _pyjwt.InvalidTokenError as e:
+        try:
+            unverified = _pyjwt.decode(token, options={"verify_signature": False})
+            header = _pyjwt.get_unverified_header(token)
+            print(f"[auth] JWT rejected: {type(e).__name__}: {e} | header={header} | "
+                  f"iss={unverified.get('iss')} aud={unverified.get('aud')} exp={unverified.get('exp')} "
+                  f"sub={unverified.get('sub')}")
+        except Exception as decode_err:
+            print(f"[auth] JWT rejected: {type(e).__name__}: {e} | could not decode unverified claims: {decode_err}")
         raise HTTPException(status_code=401, detail="Invalid session")
     return payload  # payload["sub"] = Supabase user UUID, payload["email"] = email
 
