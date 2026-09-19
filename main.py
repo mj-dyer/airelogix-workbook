@@ -410,12 +410,47 @@ def submit_deal(request: Request, submission: DealSubmission, background_tasks: 
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# A deal's identity stays withheld from lenders until the borrower has
+# actually chosen to engage one ("two-way match") — patch_status is the
+# only thing that moves a deal into one of these two statuses.
+IDENTITY_REVEALED_STATUSES = {"lender_selected", "closed"}
+
+def _redact_analysis_identity(analysis):
+    """Returns a copy of `analysis` with the real borrower/entity identity
+    scrubbed out of every string field that contains it, for lender-facing
+    responses on deals that haven't reached a two-way match yet."""
+    if not analysis:
+        return analysis
+    real_name = (analysis.get("borrowerName") or "").strip()
+    placeholder = "Borrower — Identity Withheld"
+    if not real_name or real_name == "Borrower":
+        redacted = dict(analysis)
+        redacted["borrowerEmail"] = ""
+        return redacted
+
+    def scrub(value):
+        if isinstance(value, str):
+            return value.replace(real_name, placeholder) if real_name in value else value
+        if isinstance(value, dict):
+            return {k: scrub(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [scrub(v) for v in value]
+        return value
+
+    redacted = scrub(analysis)
+    redacted["borrowerEmail"] = ""
+    return redacted
+
+
 @app.get("/deals")
 def get_deals(user: dict = Depends(get_current_user)):
     try:
         deals = list_deals()
         queue = []
         for d in deals:
+            analysis = d.get("analysis")
+            if d.get("status") not in IDENTITY_REVEALED_STATUSES:
+                analysis = _redact_analysis_identity(analysis)
             queue.append({
                 "id": d.get("dealId"),
                 "anonId": _anon_id(d.get("dealId", "")),
@@ -430,7 +465,7 @@ def get_deals(user: dict = Depends(get_current_user)):
                 "flagCount": d.get("flagCount", 0),
                 "criticalFlags": d.get("criticalFlags", 0),
                 "ioiCount": d.get("ioiCount", 0),
-                "analysis": d.get("analysis"),
+                "analysis": analysis,
             })
         return {"deals": queue, "count": len(queue)}
     except Exception as e:
@@ -482,6 +517,8 @@ def get_deal(deal_id: str, user: dict = Depends(get_current_user)):
     result["hasSpecSheet"] = bool(result.get("specSheet"))
     result.pop("borrowerEmail", None)
     result.pop("specSheet", None)
+    if result.get("status") not in IDENTITY_REVEALED_STATUSES:
+        result["analysis"] = _redact_analysis_identity(result.get("analysis"))
     return result
 
 

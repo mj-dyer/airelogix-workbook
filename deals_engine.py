@@ -820,7 +820,7 @@ def run_analysis(submission: dict) -> dict:
         adjusted_liquid = liquid_assets + entity_contribution
         adjusted_liquidity_ratio = adjusted_liquid / loan_amount
         guarantee_entities = [{
-            "entity": f"{last_name} Capital LLC",
+            "entity": "Affiliated Entity — Identity Withheld",
             "entityNet": entity_contribution * 2,
             "creditPct": 1.0,
             "contribution": entity_contribution,
@@ -1027,7 +1027,7 @@ def run_analysis(submission: dict) -> dict:
     ]
     if guarantee_entities:
         guarantors.append({
-            "name": f"{last_name} Capital LLC",
+            "name": "Affiliated Entity — Identity Withheld",
             "type": "Entity — Investment Holding",
             "ownership": "100%",
             "netWorth": guarantee_entities[0]["entityNet"],
@@ -1041,7 +1041,7 @@ def run_analysis(submission: dict) -> dict:
     k1_detail = financial.get("k1Detail") or []
     if not k1_detail and k1_entities >= 1 and not has_w2:
         k1_detail = [{
-            "entityName": f"{last_name} Holdings LLC",
+            "entityName": "Affiliated Entity — Identity Withheld",
             "entityType": "LLC",
             "ownershipPct": 100,
             "participationType": "active",
