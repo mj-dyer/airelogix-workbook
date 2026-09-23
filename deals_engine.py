@@ -38,6 +38,20 @@ B0 = 0.016636
 KK = 0.44882
 
 
+def _is_independent_program(p: str) -> bool:
+    """
+    Third-party / multi-make engine coverage — not OEM-specific, so it gets the
+    same tier regardless of airframe/engine family. Covers JSSI plus the smaller
+    independent programs (Engine Assurance Program, N1 Smart Engine/AvGuard,
+    Vector VMAX, and the handful of tiny ones).
+    """
+    return any(term in p for term in (
+        "jssi", "engine assurance", "eap", "n1 smart engine", "avguard",
+        "vector vmax", "vmax", "aerodynamics sa", "propulsion international",
+        "ejet services",
+    ))
+
+
 def get_xls_fmv(year: int, aftt: int, program: str = "") -> Optional[float]:
     """Returns FMV in millions for Citation XLS/XLS+."""
     b = BB_XLS.get(year)
@@ -49,14 +63,14 @@ def get_xls_fmv(year: int, aftt: int, program: str = "") -> Optional[float]:
     B = B0 * math.exp(KK * (10 - b["age"]))
     h_adj = delta * A + abs(delta) * delta * B
     base = b["retail"] * 1e6 + h_adj
-    # Program discount
-    # ESP-G / ESP Gold = 0.000 (co-equal with PA+, per handoff doc)
+    # Program discount — PW500 engine (Citation Excel/XLS/XLS+/XLS Gen2).
+    # PA+ / ESP Gold = premium tier; PA / ESP (any other tier) = baseline.
     p = (program or "").lower()
-    if "pa+" in p or "esp-g" in p or "esp gold" in p or "tap blue" in p or "power advantage plus" in p:
-        disc = 0.0
+    if "pa+" in p or "power advantage plus" in p or "esp gold" in p or "esp-g" in p:
+        disc = -0.020  # premium tier
     elif "power advantage" in p or "esp" in p or " pa " in p:
-        disc = 0.020
-    elif "jssi" in p:
+        disc = 0.0  # baseline
+    elif _is_independent_program(p):
         disc = 0.030
     elif "no program" in p or "off program" in p or "not enrolled" in p or not p:
         disc = 0.080
@@ -99,15 +113,17 @@ def get_cl350_fmv(year: int, aftt: int, program: str = "") -> Optional[float]:
     h_adj = delta * A + abs(delta) * delta * B
     base = b["retail"] * 1e6 + h_adj
 
-    # Program discount — MSP-G is baseline (0%), all others are discounts
-    # Source: CL350 curve v4, 10 confirmed closes. Do not use premiums.
+    # Program discount — Honeywell HTF7000 engine (Challenger 300/350/3500).
+    # MSP Gold/CMSP Gold is a premium tier above the MSP/CMSP baseline.
     p = (program or "").lower()
-    if "msp-g" in p or "msp gold" in p:
-        disc = 0.000  # MSP Gold (Honeywell) — baseline
-    elif "msp" in p or "smart parts" in p:
-        disc = 0.015  # MSP Standard / Smart Parts — data-confirmed -1.5% vs MSP-G
-    elif "jssi" in p:
-        disc = 0.030  # JSSI 100% / Essential Select — data-confirmed -3.0% vs MSP-G
+    if "msp-g" in p or "msp gold" in p or "cmsp gold" in p:
+        disc = -0.020  # premium tier
+    elif "msp" in p or "cmsp" in p:
+        disc = 0.0  # baseline — Honeywell MSP / CMSP
+    elif "smart parts" in p or "dependability plus" in p:
+        disc = 0.050  # Bombardier-administered alternative — not the primary OEM program
+    elif _is_independent_program(p):
+        disc = 0.030
     elif "off" in p or "not enrolled" in p or not program:
         disc = 0.100  # Off-program
     else:
@@ -163,16 +179,17 @@ def get_g550_fmv(year: int, aftt: int, program: str = "") -> Optional[float]:
                   bbv * (G550_D2 / 100) * (t2 / 100))
 
     # Program discount (applied as reduction before market cal)
-    # Source: handoff doc PROGRAM_DISCOUNTS — RRCC/RRCC-E are baseline (0%), not a premium
+    # Rolls-Royce BR710 engine (G550). CorporateCare Enhanced is a premium tier
+    # above the CorporateCare/RRCC baseline.
     p = (program or "").lower()
-    if "corporatecare" in p or "rrcc" in p or "rolls-royce" in p or "rolls royce" in p:
-        prog_disc = 0.000  # RRCC and RRCC Enhanced: baseline
-    elif "jssi" in p:
-        prog_disc = 0.030  # JSSI 100%
-    elif "eap" in p or "msp" in p or "tap" in p:
-        prog_disc = 0.020  # EAP / other enrolled
+    if "corporatecare enhanced" in p or "rrcc enhanced" in p or "rrcc-e" in p:
+        prog_disc = -0.030  # premium tier
+    elif "corporatecare" in p or "rrcc" in p or "rolls-royce" in p or "rolls royce" in p:
+        prog_disc = 0.0  # baseline
+    elif _is_independent_program(p):
+        prog_disc = 0.030
     elif "off" in p or "not enrolled" in p or not program:
-        prog_disc = 0.100  # Off program / null
+        prog_disc = 0.080  # Off program / null
     else:
         prog_disc = 0.060  # Unrecognized / unknown
 
@@ -311,36 +328,50 @@ G550_DEPR_RATES = {
 }
 
 
-def get_balloon(fmv: float, loan: float, year: int, aftt: int,
-                term_months: int, make: str, model: str, program: str) -> float:
-    """
-    Balloon = forward FMV at maturity × actual deal LTV.
-    G550: uses vintage-specific base depreciation rate from G550_DEPR_RATES.
-    Other types: use simple flat rates.
-    fmv is in dollars (e.g. 34619000).
-    """
-    term_years = term_months / 12
+def _base_depr_rate(year: int, make: str, model: str) -> float:
+    """Base-scenario annual depreciation rate for the aircraft's collateral curve."""
     model_upper = (model or "").upper()
     make_upper  = (make or "").upper()
 
     if "G550" in model_upper or "G-550" in model_upper or (
             "GULFSTREAM" in make_upper and "G550" in model_upper):
         rates = G550_DEPR_RATES.get(int(year), (0.025, 0.045, 0.065))
-        depr_rate = rates[1]  # base scenario
+        return rates[1]  # base scenario
     elif "CHALLENGER 350" in model_upper or "CL350" in model_upper:
-        depr_rate = 0.030
+        return 0.030
     elif "XLS" in model_upper:
         rates = XLS_DEPR_RATES.get(int(year), (0.025, 0.045, 0.065))
-        depr_rate = rates[1]  # base scenario
+        return rates[1]  # base scenario
     else:
-        depr_rate = 0.035
+        return 0.035
 
-    fmv_at_maturity = fmv * ((1 - depr_rate) ** term_years)
 
-    # Balloon = ffmv × actual deal LTV (not hardcoded 70%)
-    ltv_fraction = loan / fmv if fmv else 0.70
-    balloon = fmv_at_maturity * ltv_fraction
-    return balloon
+def get_projected_fmv_at_maturity(fmv: float, year: int, term_months: int,
+                                   make: str, model: str) -> float:
+    """
+    Pure FMV projection: the aircraft's FMV at funding, depreciated forward to
+    the loan's maturity date. Deliberately decoupled from loan amount/LTV —
+    two deals on the identical aircraft at different advance rates project the
+    same FMV at maturity. Display/lender-education use only.
+    fmv is in dollars (e.g. 34619000).
+    """
+    term_years = term_months / 12
+    depr_rate = _base_depr_rate(year, make, model)
+    return fmv * ((1 - depr_rate) ** term_years)
+
+
+def get_balloon(loan: float, year: int, term_months: int,
+                make: str, model: str) -> float:
+    """
+    Balloon used for the illustrative payment calculation: assumes the loan's
+    remaining principal depreciates at the same rate as the underlying asset's
+    collateral curve. This is a loan-balance assumption for amortization
+    purposes only — see get_projected_fmv_at_maturity() for the FMV projection
+    shown to lenders, which is a separate, unrelated figure.
+    """
+    term_years = term_months / 12
+    depr_rate = _base_depr_rate(year, make, model)
+    return loan * ((1 - depr_rate) ** term_years)
 
 
 # ── GDSCR scoring (Factor 1) ──────────────────────────────────────────────────
@@ -470,21 +501,16 @@ def score_ltv(ltv: float) -> float:
 
 # ── Collateral quality scoring (Factor 6) ────────────────────────────────────
 
-def score_collateral(age: int, program: str, registration: str = "N") -> float:
+def score_collateral(age: int, program: str) -> float:
     p = (program or "").lower()
     enrolled = ("no program" not in p and "off program" not in p and "not enrolled" not in p and bool(p))
-    n_reg = registration.upper().startswith("N") if registration else True
 
-    if age <= 10 and enrolled and n_reg:
-        return 2.0
     if age <= 10 and enrolled:
-        return 2.5
+        return 2.0
     if age <= 10:
         return 3.5
-    if age <= 15 and enrolled and n_reg:
-        return 3.0
     if age <= 15 and enrolled:
-        return 3.5
+        return 3.0
     if age <= 15:
         return 4.0
     if age <= 20 and enrolled:
@@ -652,6 +678,7 @@ def run_analysis(submission: dict) -> dict:
     aircraft_make = aircraft_data.get("make", "")
     aircraft_model = aircraft_data.get("model", "")
     aircraft_serial = aircraft_data.get("serial", "")
+    aircraft_registration = aircraft_data.get("registration", "")
     aircraft_aftt = int(str(aircraft_data.get("aftt", "0")).replace(",", "") or 0)
     engine_program = aircraft_data.get("engineProgram", "")
     purchase_price_raw = str(aircraft_data.get("purchasePrice", "0")).replace(",", "").replace("$", "")
@@ -705,10 +732,12 @@ def run_analysis(submission: dict) -> dict:
         f"30/360 basis. Not a lender commitment."
     )
 
-    balloon_pmt = get_balloon(fmv, loan_amount, aircraft_year, aircraft_aftt,
-                              term_months, aircraft_make, aircraft_model, engine_program)
+    balloon_pmt = get_balloon(loan_amount, aircraft_year, term_months, aircraft_make, aircraft_model)
     monthly_pmt = monthly_payment(loan_amount, illustrative_rate, term_months, balloon_pmt)
     annual_aircraft_ds = monthly_pmt * 12
+    projected_fmv_at_maturity = get_projected_fmv_at_maturity(
+        fmv, aircraft_year, term_months, aircraft_make, aircraft_model
+    )
 
     # Existing debt service
     existing_annual_ds = float(str(financial.get("existingDebt", "0")).replace(",", "") or 0)
@@ -796,11 +825,15 @@ def run_analysis(submission: dict) -> dict:
         k1_entities = 1 if borrower_type == "individual" else 2
         debt_to_ebitda = 0
 
+        # Fixed Charge Coverage Ratio (FCCR): recurring cash ÷ (this loan's
+        # payment + other recurring debt/lease service). "gdscr" is kept as the
+        # variable name for code-path symmetry with the corporate branch, but
+        # for individuals this is FCCR, not GDSCR.
         gdscr = qualifying_income / total_pro_forma_ds if total_pro_forma_ds > 0 else 0
         gdscr_assessment = (
-            "Strong" if gdscr >= 2.0 else
-            "Adequate" if gdscr >= 1.5 else
-            "Marginal" if gdscr >= 1.0 else
+            "Strong" if gdscr >= 1.75 else
+            "Adequate" if gdscr >= 1.15 else
+            "Marginal" if gdscr >= 1.00 else
             "Below threshold"
         )
 
@@ -905,41 +938,103 @@ def run_analysis(submission: dict) -> dict:
     # ── Flags ─────────────────────────────────────────────────────────────────
     flags = []
 
-    if gdscr < 1.0:
+    # Each of the three quantifiable legs — cash flow (GDSCR/FCCR), liquidity,
+    # LTV — can offset weakness in either of the other two. "Clean" means that
+    # leg's own flag wouldn't fire on its own (Adequate-or-better; for LTV,
+    # under 80%). Offsets are applied transparently: severity is downgraded,
+    # never hidden, and the flag's detail text says why.
+    ltv_clean = ltv_vs_fmv < 0.80
+    liquidity_clean = liquidity_ratio >= 1.0
+    gdscr_clean = gdscr >= 1.25 if is_corporate else gdscr >= 1.15
+    gdscr_label = "GDSCR" if is_corporate else "FCCR"
+
+    def _offset_severity(raw_severity, other_clean_count):
+        """CRITICAL→MATERIAL if >=1 of the other two legs is clean; MATERIAL→MINOR if both are."""
+        if raw_severity == "CRITICAL" and other_clean_count >= 1:
+            return "MATERIAL"
+        if raw_severity == "MATERIAL" and other_clean_count >= 2:
+            return "MINOR"
+        return raw_severity
+
+    def _offset_note(raw_severity, adjusted_severity, offsetting_bits):
+        if adjusted_severity == raw_severity:
+            return ""
+        return f" Severity adjusted from {raw_severity} to {adjusted_severity} — offset by strong {' and '.join(offsetting_bits)}."
+
+    # ── GDSCR / FCCR flag ──────────────────────────────────────────────────
+    if is_corporate:
+        gdscr_raw = "CRITICAL" if gdscr < 1.0 else "MATERIAL" if gdscr < 1.25 else None
+    else:
+        gdscr_raw = "CRITICAL" if gdscr < 1.00 else "MATERIAL" if gdscr < 1.15 else None
+
+    if gdscr_raw:
+        other_clean = int(liquidity_clean) + int(ltv_clean)
+        severity = _offset_severity(gdscr_raw, other_clean)
+        offsetting_bits = []
+        if liquidity_clean: offsetting_bits.append(f"liquidity ({liquidity_ratio:.2f}x)")
+        if ltv_clean: offsetting_bits.append(f"LTV ({ltv_vs_fmv*100:.1f}% vs FMV)")
+        note = _offset_note(gdscr_raw, severity, offsetting_bits)
+        detail = (
+            f"Pro forma {gdscr_label} of {gdscr:.2f}x falls below the minimum threshold. "
+            f"After-tax qualifying income of {after_tax_qualifying:,.0f} does not independently cover "
+            f"total pro forma debt service of {total_pro_forma_ds:,.0f}."
+            if gdscr_raw == "CRITICAL" else
+            f"Pro forma {gdscr_label} of {gdscr:.2f}x is below the institutional preference. Credit relies "
+            f"on balance sheet strength rather than cash flow alone."
+        )
         flags.append({
-            "severity": "CRITICAL",
+            "severity": severity,
+            "rawSeverity": gdscr_raw,
             "code": "FLAG-1",
-            "title": "GDSCR below 1.0x — income does not cover debt service",
-            "detail": f"Pro forma GDSCR of {gdscr:.2f}x falls below the minimum 1.0x threshold. After-tax qualifying income of {after_tax_qualifying:,.0f} does not independently cover total pro forma debt service of {total_pro_forma_ds:,.0f}.",
-            "mitigant": f"Net worth of {stated_net_worth:,.0f} provides balance sheet backstop. Liquidity of {liquid_assets:,.0f} ({liquidity_ratio:.2f}x loan) provides additional coverage.",
-            "action": "Present to specialty lenders only. Recommend LTV reduction or income documentation to improve GDSCR.",
-        })
-    elif gdscr < 1.25:
-        flags.append({
-            "severity": "MATERIAL",
-            "code": "FLAG-1",
-            "title": f"GDSCR {gdscr:.2f}x — marginal cash flow coverage",
-            "detail": f"Pro forma GDSCR of {gdscr:.2f}x is below the 1.25x institutional preference. Credit relies on balance sheet strength rather than cash flow alone.",
-            "mitigant": f"Net worth coverage {net_worth_coverage:.1f}x provides primary backstop. Liquidity ratio {liquidity_ratio:.2f}x.",
-            "action": "Recommend as balance-sheet-led credit. Document net worth and liquidity as primary repayment sources.",
+            "title": f"{gdscr_label} {gdscr:.2f}x — {'below minimum threshold' if gdscr_raw == 'CRITICAL' else 'marginal cash flow coverage'}",
+            "detail": detail + note,
+            "mitigant": f"Net worth coverage {net_worth_coverage:.1f}x. Liquidity ratio {liquidity_ratio:.2f}x.",
+            "action": (
+                "Present to specialty lenders only. Recommend LTV reduction or income documentation to improve coverage."
+                if gdscr_raw == "CRITICAL" else
+                "Recommend as balance-sheet-led credit. Document net worth and liquidity as primary repayment sources."
+            ),
         })
 
+    # ── Liquidity flag ────────────────────────────────────────────────────
     if liquid_assets < loan_amount:
+        liq_raw = "CRITICAL" if liquidity_ratio < 0.5 else "MATERIAL"
+        other_clean = int(gdscr_clean) + int(ltv_clean)
+        severity = _offset_severity(liq_raw, other_clean)
+        offsetting_bits = []
+        if gdscr_clean: offsetting_bits.append(f"{gdscr_label} ({gdscr:.2f}x)")
+        if ltv_clean: offsetting_bits.append(f"LTV ({ltv_vs_fmv*100:.1f}% vs FMV)")
+        note = _offset_note(liq_raw, severity, offsetting_bits)
         flags.append({
-            "severity": "MATERIAL" if liquidity_ratio < 0.5 else "MATERIAL",
+            "severity": severity,
+            "rawSeverity": liq_raw,
             "code": "FLAG-2",
             "title": f"Liquid assets below loan amount — liquidity ratio {liquidity_ratio:.2f}x",
-            "detail": f"Personal liquid assets of {liquid_assets:,.0f} represent {liquidity_ratio:.2f}x the loan amount of {loan_amount:,.0f}.",
-            "mitigant": f"Net worth of {stated_net_worth:,.0f} ({net_worth_coverage:.1f}x loan) provides strong economic backstop.",
+            "detail": (
+                f"Personal liquid assets of {liquid_assets:,.0f} represent {liquidity_ratio:.2f}x the "
+                f"loan amount of {loan_amount:,.0f}."
+            ) + note,
+            "mitigant": f"Net worth of {stated_net_worth:,.0f} ({net_worth_coverage:.1f}x loan) provides economic backstop.",
             "action": "Confirm liquid asset documentation. Consider entity guarantee to bring effective liquidity above 1.0x.",
         })
 
-    if ltv_vs_fmv > 0.90:
+    # ── LTV flag ───────────────────────────────────────────────────────────
+    if ltv_vs_fmv > 0.80:
+        ltv_raw = "CRITICAL" if ltv_vs_fmv > 0.90 else "MATERIAL"
+        other_clean = int(gdscr_clean) + int(liquidity_clean)
+        severity = _offset_severity(ltv_raw, other_clean)
+        offsetting_bits = []
+        if gdscr_clean: offsetting_bits.append(f"{gdscr_label} ({gdscr:.2f}x)")
+        if liquidity_clean: offsetting_bits.append(f"liquidity ({liquidity_ratio:.2f}x)")
+        note = _offset_note(ltv_raw, severity, offsetting_bits)
         flags.append({
-            "severity": "MATERIAL",
+            "severity": severity,
+            "rawSeverity": ltv_raw,
             "code": "FLAG-3",
-            "title": f"LTV vs FMV {ltv_vs_fmv*100:.1f}% — above 90% threshold",
-            "detail": f"Loan of {loan_amount:,.0f} represents {ltv_vs_fmv*100:.1f}% of AireLogix estimated FMV of {fmv:,.0f}.",
+            "title": f"LTV vs FMV {ltv_vs_fmv*100:.1f}% — above {'90%' if ltv_raw == 'CRITICAL' else '80%'} threshold",
+            "detail": (
+                f"Loan of {loan_amount:,.0f} represents {ltv_vs_fmv*100:.1f}% of AireLogix estimated FMV of {fmv:,.0f}."
+            ) + note,
             "mitigant": "Strong credit profile and engine program enrollment support lender confidence in collateral.",
             "action": "Flag for lender attention. Consider independent appraisal.",
         })
@@ -952,6 +1047,23 @@ def run_analysis(submission: dict) -> dict:
             "detail": f"The {aircraft_year} {aircraft_description} is {aircraft_age} years old. Many institutional lenders have maximum aircraft age limits of 20 years at origination.",
             "mitigant": "Engine program enrollment and low hours are positive mitigants. Confirm engine program status.",
             "action": "Verify engine program and AFTT. Route to lenders with known appetite for this vintage.",
+        })
+
+    # Registration jurisdiction — informational, not a value deduction. Foreign
+    # registries vary in legal protections/lien enforceability; this flags it
+    # for review rather than penalizing collateral scoring for it.
+    if aircraft_registration and not aircraft_registration.upper().startswith("N"):
+        flags.append({
+            "severity": "MATERIAL",
+            "code": f"FLAG-{len(flags)+1}",
+            "title": f"Non-US registration ({aircraft_registration}) — jurisdiction review recommended",
+            "detail": (
+                f"The aircraft is registered {aircraft_registration}, outside the US (\"N\") registry. This is "
+                f"not scored as a collateral value deduction — it's flagged because registry jurisdiction affects "
+                f"legal protections, lien enforceability, and operating-history visibility, which vary by registry."
+            ),
+            "mitigant": "Many foreign registries carry legal protections comparable to the US registry — jurisdiction-specific review resolves this.",
+            "action": "Confirm registry jurisdiction and applicable legal protections before finalizing structure.",
         })
 
     # ── Lender routing ────────────────────────────────────────────────────────
@@ -1117,6 +1229,7 @@ def run_analysis(submission: dict) -> dict:
             "fmv_purchase_price": round(purchase_price),
             "fmv_used": round(fmv),
             "estimatedFMV": round(fmv),
+            "projectedFmvAtMaturity": round(projected_fmv_at_maturity),
             "ltv_on_curve_fmv": round(ltv_vs_fmv * 100, 1),
             "ltv_on_purchase_price": round(ltv * 100, 1),
             "curveName": (
@@ -1144,6 +1257,7 @@ def run_analysis(submission: dict) -> dict:
         "gdscr": {
             "gdscr": round(gdscr, 4),
             "assessment": gdscr_assessment,
+            "metricLabel": "GDSCR" if is_corporate else "FCCR",
             "afterTaxIncome": round(after_tax_qualifying),
             "totalAnnualDS": round(total_pro_forma_ds),
         },
@@ -1228,6 +1342,10 @@ def run_analysis(submission: dict) -> dict:
         "federalTaxesPaid": _parse_num(financial.get("federalTaxesPaid", 0)) if not is_corporate else 0,
         "debtDetail": financial.get("debtDetail", []) if not is_corporate else [],
         "trustStructures": financial.get("trustStructures", []) if not is_corporate else [],
+        # Free-text, borrower-supplied note about a future liquidity event (e.g. a
+        # pending sale). Passed through as-is — not scored, not offset against any
+        # flag. Purely context for the lender to investigate and condition their own IOI.
+        "anticipatedLiquidityEvent": financial.get("anticipatedLiquidityEvent", ""),
     }
 
     # Attach liquidDetail to balanceSheet if present in financial submission

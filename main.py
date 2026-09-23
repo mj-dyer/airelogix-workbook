@@ -442,6 +442,23 @@ def _redact_analysis_identity(analysis):
     return redacted
 
 
+def _strip_internal_rating(analysis):
+    """Removes the internal composite rating/band/disposition from riskRating
+    before returning analysis to lenders. Vaero's positioning is facts-only —
+    lenders see the underlying metrics and flags, never a derived score.
+    Applied unconditionally, unlike identity redaction — this isn't a
+    pre-IOI/post-IOI distinction, it never goes to lenders."""
+    if not analysis or "riskRating" not in analysis:
+        return analysis
+    stripped = dict(analysis)
+    risk_rating = dict(stripped["riskRating"])
+    risk_rating.pop("rating", None)
+    risk_rating.pop("band", None)
+    risk_rating.pop("disposition", None)
+    stripped["riskRating"] = risk_rating
+    return stripped
+
+
 @app.get("/deals")
 def get_deals(user: dict = Depends(get_current_user)):
     try:
@@ -451,6 +468,7 @@ def get_deals(user: dict = Depends(get_current_user)):
             analysis = d.get("analysis")
             if d.get("status") not in IDENTITY_REVEALED_STATUSES:
                 analysis = _redact_analysis_identity(analysis)
+            analysis = _strip_internal_rating(analysis)
             queue.append({
                 "id": d.get("dealId"),
                 "anonId": _anon_id(d.get("dealId", "")),
@@ -519,6 +537,7 @@ def get_deal(deal_id: str, user: dict = Depends(get_current_user)):
     result.pop("specSheet", None)
     if result.get("status") not in IDENTITY_REVEALED_STATUSES:
         result["analysis"] = _redact_analysis_identity(result.get("analysis"))
+    result["analysis"] = _strip_internal_rating(result.get("analysis"))
     return result
 
 
