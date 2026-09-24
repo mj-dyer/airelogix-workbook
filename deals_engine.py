@@ -943,7 +943,7 @@ def run_analysis(submission: dict) -> dict:
     # leg's own flag wouldn't fire on its own (Adequate-or-better; for LTV,
     # under 80%). Offsets are applied transparently: severity is downgraded,
     # never hidden, and the flag's detail text says why.
-    ltv_clean = ltv_vs_fmv < 0.80
+    ltv_clean = ltv_vs_fmv < 0.90
     liquidity_clean = liquidity_ratio >= 1.0
     gdscr_clean = gdscr >= 1.25 if is_corporate else gdscr >= 1.15
     gdscr_label = "GDSCR" if is_corporate else "FCCR"
@@ -1019,8 +1019,13 @@ def run_analysis(submission: dict) -> dict:
         })
 
     # ── LTV flag ───────────────────────────────────────────────────────────
-    if ltv_vs_fmv > 0.80:
-        ltv_raw = "CRITICAL" if ltv_vs_fmv > 0.90 else "MATERIAL"
+    # Single threshold at 90% — no separate 80-90% tier. A large gap between
+    # purchase price and FMV isn't itself a warning sign (it may just mean the
+    # borrower has other options, e.g. non-recourse, or isn't drawing much
+    # liquidity from the aircraft); only genuinely high leverage against FMV
+    # gets flagged.
+    if ltv_vs_fmv > 0.90:
+        ltv_raw = "CRITICAL"
         other_clean = int(gdscr_clean) + int(liquidity_clean)
         severity = _offset_severity(ltv_raw, other_clean)
         offsetting_bits = []
@@ -1031,7 +1036,7 @@ def run_analysis(submission: dict) -> dict:
             "severity": severity,
             "rawSeverity": ltv_raw,
             "code": "FLAG-3",
-            "title": f"LTV vs FMV {ltv_vs_fmv*100:.1f}% — above {'90%' if ltv_raw == 'CRITICAL' else '80%'} threshold",
+            "title": f"LTV vs FMV {ltv_vs_fmv*100:.1f}% — above 90% threshold",
             "detail": (
                 f"Loan of {loan_amount:,.0f} represents {ltv_vs_fmv*100:.1f}% of AireLogix estimated FMV of {fmv:,.0f}."
             ) + note,
