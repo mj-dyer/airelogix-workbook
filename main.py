@@ -216,6 +216,7 @@ class DealSubmission(BaseModel):
     guarantorType: Optional[str] = None
     principalPGAvailable: Optional[str] = None
     specSheet: Optional[dict] = None  # {base64: str, filename: str}
+    submittedDate: Optional[str] = None  # client-computed local date (YYYY-MM-DD) — server has no reliable way to know the borrower's timezone
 
 class StatusUpdate(BaseModel):
     status: str
@@ -336,7 +337,10 @@ def submit_deal(request: Request, submission: DealSubmission, background_tasks: 
             "status": "select_lender_pool",
             "stage": "select_lender_pool",
             "ioiCount": 0,
-            "receivedDate": analysis["analysisDate"],
+            # Prefer the borrower's own local date over the server's UTC clock —
+            # a naive datetime.now() on a UTC-hosted server reads as "tomorrow"
+            # for any US-timezone borrower submitting in the evening.
+            "receivedDate": data.get("submittedDate") or analysis["analysisDate"],
             "borrowerName": analysis["borrowerName"],
             "borrowerEmail": personal.get("email", ""),
             "borrowerUserId": user["sub"],
@@ -401,7 +405,10 @@ def submit_deal(request: Request, submission: DealSubmission, background_tasks: 
             "gdscr": analysis.get("gdscr", {}).get("gdscr", 0),
             "loanAmount": analysis["transaction"]["loanAmount"],
             "aircraft": deal["aircraft"],
-            "receivedDate": analysis["analysisDate"],
+            # Prefer the borrower's own local date over the server's UTC clock —
+            # a naive datetime.now() on a UTC-hosted server reads as "tomorrow"
+            # for any US-timezone borrower submitting in the evening.
+            "receivedDate": data.get("submittedDate") or analysis["analysisDate"],
         }
 
     except Exception as e:
