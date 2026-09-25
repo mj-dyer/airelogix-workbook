@@ -291,6 +291,9 @@ def monthly_payment(principal: float, annual_rate: float, term_months: int,
 # well above the 3.0% base and even above the 4.8% bear case. Moved base to
 # 4.4% (midpoint between old base and lender-implied) for 2014-2016 only —
 # no real-deal evidence yet for other vintage buckets, left those alone.
+# Bull/bear rebalanced same day to preserve this bucket's original spread
+# (1.5pts below base / 1.8pts above) around the new base rather than leaving
+# bear only 0.4pts above base.
 XLS_DEPR_RATES = {
     2008: (0.020, 0.035, 0.055),
     2009: (0.020, 0.035, 0.055),
@@ -298,9 +301,9 @@ XLS_DEPR_RATES = {
     2011: (0.018, 0.030, 0.048),
     2012: (0.018, 0.030, 0.048),
     2013: (0.018, 0.030, 0.048),
-    2014: (0.015, 0.044, 0.048),
-    2015: (0.015, 0.044, 0.048),
-    2016: (0.015, 0.044, 0.048),
+    2014: (0.029, 0.044, 0.062),
+    2015: (0.029, 0.044, 0.062),
+    2016: (0.029, 0.044, 0.062),
     2017: (0.025, 0.045, 0.065),
     2018: (0.025, 0.045, 0.065),
     2019: (0.025, 0.045, 0.065),
