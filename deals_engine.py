@@ -38,6 +38,26 @@ B0 = 0.016636
 KK = 0.44882
 
 
+# Canonical engine-program tiers, keyed to discount value per curve. Populated
+# by /parse-spec's engineProgramTier classification (main.py) or the manual-
+# entry dropdown, and preferred over free-text regex matching when present —
+# see the "engine-program extraction redesign" fix-queue item. Regex matching
+# on `program` free text is kept as a fallback for legacy data that predates
+# this and never got a canonical tier assigned.
+XLS_TIER_DISCOUNTS = {
+    "premium": -0.020, "baseline": 0.0, "independent": 0.030,
+    "off_program": 0.080, "unknown": 0.060,
+}
+CL350_TIER_DISCOUNTS = {
+    "premium": -0.020, "baseline": 0.0, "smartparts": 0.050,
+    "independent": 0.030, "off_program": 0.100, "unknown": 0.060,
+}
+G550_TIER_DISCOUNTS = {
+    "premium": -0.030, "baseline": 0.0, "independent": 0.030,
+    "off_program": 0.080, "unknown": 0.060,
+}
+
+
 def _is_independent_program(p: str) -> bool:
     """
     Third-party / multi-make engine coverage — not OEM-specific, so it gets the
@@ -52,7 +72,7 @@ def _is_independent_program(p: str) -> bool:
     ))
 
 
-def get_xls_fmv(year: int, aftt: int, program: str = "") -> Optional[float]:
+def get_xls_fmv(year: int, aftt: int, program: str = "", program_tier: str = "") -> Optional[float]:
     """Returns FMV in millions for Citation XLS/XLS+."""
     b = BB_XLS.get(year)
     if not b:
@@ -65,17 +85,20 @@ def get_xls_fmv(year: int, aftt: int, program: str = "") -> Optional[float]:
     base = b["retail"] * 1e6 + h_adj
     # Program discount — PW500 engine (Citation Excel/XLS/XLS+/XLS Gen2).
     # PA+ / ESP Gold = premium tier; PA / ESP (any other tier) = baseline.
-    p = (program or "").lower()
-    if "pa+" in p or "power advantage plus" in p or "esp gold" in p or "esp-g" in p:
-        disc = -0.020  # premium tier
-    elif "power advantage" in p or "esp" in p or " pa " in p:
-        disc = 0.0  # baseline
-    elif _is_independent_program(p):
-        disc = 0.030
-    elif "no program" in p or "off program" in p or "not enrolled" in p or not p:
-        disc = 0.080
+    if program_tier and program_tier in XLS_TIER_DISCOUNTS:
+        disc = XLS_TIER_DISCOUNTS[program_tier]
     else:
-        disc = 0.060
+        p = (program or "").lower()
+        if "pa+" in p or "power advantage plus" in p or "esp gold" in p or "esp-g" in p:
+            disc = -0.020  # premium tier
+        elif "power advantage" in p or "esp" in p or " pa " in p:
+            disc = 0.0  # baseline
+        elif _is_independent_program(p):
+            disc = 0.030
+        elif "no program" in p or "off program" in p or "not enrolled" in p or not p:
+            disc = 0.080
+        else:
+            disc = 0.060
     cal = MARKET_CAL_XLS.get(year, 0)
     fmv = base * (1 - disc) * (1 + cal)
     return round(fmv / 1e6, 3)
@@ -100,7 +123,7 @@ B0_CL350 = 0.016636
 KK_CL350 = 0.44882
 
 
-def get_cl350_fmv(year: int, aftt: int, program: str = "") -> Optional[float]:
+def get_cl350_fmv(year: int, aftt: int, program: str = "", program_tier: str = "") -> Optional[float]:
     """Returns FMV in millions for Bombardier Challenger 350."""
     b = BB_CL350.get(int(year))
     if not b:
@@ -115,19 +138,22 @@ def get_cl350_fmv(year: int, aftt: int, program: str = "") -> Optional[float]:
 
     # Program discount — Honeywell HTF7000 engine (Challenger 300/350/3500).
     # MSP Gold/CMSP Gold is a premium tier above the MSP/CMSP baseline.
-    p = (program or "").lower()
-    if "msp-g" in p or "msp gold" in p or "cmsp gold" in p:
-        disc = -0.020  # premium tier
-    elif "msp" in p or "cmsp" in p:
-        disc = 0.0  # baseline — Honeywell MSP / CMSP
-    elif "smart parts" in p or "dependability plus" in p:
-        disc = 0.050  # Bombardier-administered alternative — not the primary OEM program
-    elif _is_independent_program(p):
-        disc = 0.030
-    elif "off" in p or "not enrolled" in p or not program:
-        disc = 0.100  # Off-program
+    if program_tier and program_tier in CL350_TIER_DISCOUNTS:
+        disc = CL350_TIER_DISCOUNTS[program_tier]
     else:
-        disc = 0.060  # Unknown / other enrolled
+        p = (program or "").lower()
+        if "msp-g" in p or "msp gold" in p or "cmsp gold" in p:
+            disc = -0.020  # premium tier
+        elif "msp" in p or "cmsp" in p:
+            disc = 0.0  # baseline — Honeywell MSP / CMSP
+        elif "smart parts" in p or "dependability plus" in p:
+            disc = 0.050  # Bombardier-administered alternative — not the primary OEM program
+        elif _is_independent_program(p):
+            disc = 0.030
+        elif "off" in p or "not enrolled" in p or not program:
+            disc = 0.100  # Off-program
+        else:
+            disc = 0.060  # Unknown / other enrolled
 
     cal = MARKET_CAL_CL350.get(int(year), 0)
     fmv = base * (1 - disc) * (1 + cal)
@@ -154,7 +180,7 @@ G550_D1  = 0.320      # high-time discount tier 1: % per 100hrs, first 500hrs ov
 G550_D2  = 0.647      # high-time discount tier 2: % per 100hrs, beyond 500hrs over
 
 
-def get_g550_fmv(year: int, aftt: int, program: str = "") -> Optional[float]:
+def get_g550_fmv(year: int, aftt: int, program: str = "", program_tier: str = "") -> Optional[float]:
     """
     Returns FMV in millions for Gulfstream G550.
     Calibrated from 51 closed sales + 13 listing ASPs (v4).
@@ -181,17 +207,20 @@ def get_g550_fmv(year: int, aftt: int, program: str = "") -> Optional[float]:
     # Program discount (applied as reduction before market cal)
     # Rolls-Royce BR710 engine (G550). CorporateCare Enhanced is a premium tier
     # above the CorporateCare/RRCC baseline.
-    p = (program or "").lower()
-    if "corporatecare enhanced" in p or "rrcc enhanced" in p or "rrcc-e" in p:
-        prog_disc = -0.030  # premium tier
-    elif "corporatecare" in p or "rrcc" in p or "rolls-royce" in p or "rolls royce" in p:
-        prog_disc = 0.0  # baseline
-    elif _is_independent_program(p):
-        prog_disc = 0.030
-    elif "off" in p or "not enrolled" in p or not program:
-        prog_disc = 0.080  # Off program / null
+    if program_tier and program_tier in G550_TIER_DISCOUNTS:
+        prog_disc = G550_TIER_DISCOUNTS[program_tier]
     else:
-        prog_disc = 0.060  # Unrecognized / unknown
+        p = (program or "").lower()
+        if "corporatecare enhanced" in p or "rrcc enhanced" in p or "rrcc-e" in p:
+            prog_disc = -0.030  # premium tier
+        elif "corporatecare" in p or "rrcc" in p or "rolls-royce" in p or "rolls royce" in p:
+            prog_disc = 0.0  # baseline
+        elif _is_independent_program(p):
+            prog_disc = 0.030
+        elif "off" in p or "not enrolled" in p or not program:
+            prog_disc = 0.080  # Off program / null
+        else:
+            prog_disc = 0.060  # Unrecognized / unknown
 
     cal = CAL_G550.get(int(year), 0)
     fmv = (bbv + h_adj) * (1 - prog_disc) * (1 + cal)
@@ -722,10 +751,12 @@ def run_analysis(submission: dict) -> dict:
     aircraft_registration = aircraft_data.get("registration", "")
     aircraft_aftt = int(str(aircraft_data.get("aftt", "0")).replace(",", "") or 0)
     engine_program = aircraft_data.get("engineProgram", "")
+    # Canonical tier from /parse-spec's engineProgramTier classification or the
+    # manual-entry dropdown — preferred over regex-matching engine_program's
+    # free text when present. See "engine-program extraction redesign" (2026-09-24).
+    engine_program_tier = (aircraft_data.get("engineProgramTier") or "").lower()
     purchase_price_raw = str(aircraft_data.get("purchasePrice", "0")).replace(",", "").replace("$", "")
     purchase_price = float(purchase_price_raw or 0)
-    # No intake field captures this yet (2026-09-24) — defaults to 0 (no deduct)
-    # until a charter-utilization field is added to the wizard.
     charter_pct = float(aircraft_data.get("charterPct", 0) or 0)
 
     aircraft_age = cur_year - aircraft_year
@@ -735,13 +766,13 @@ def run_analysis(submission: dict) -> dict:
     model_upper = (aircraft_model or "").upper()
     make_upper = (aircraft_make or "").upper()
     if "XLS" in model_upper and ("CITATION" in model_upper or "CESSNA" in make_upper):
-        fmv_millions = get_xls_fmv(aircraft_year, aircraft_aftt, engine_program)
+        fmv_millions = get_xls_fmv(aircraft_year, aircraft_aftt, engine_program, engine_program_tier)
     elif "CHALLENGER 350" in model_upper or "CL350" in model_upper:
-        fmv_millions = get_cl350_fmv(aircraft_year, aircraft_aftt, engine_program)
+        fmv_millions = get_cl350_fmv(aircraft_year, aircraft_aftt, engine_program, engine_program_tier)
     elif "G550" in model_upper or "G-550" in model_upper:
-        fmv_millions = get_g550_fmv(aircraft_year, aircraft_aftt, engine_program)
+        fmv_millions = get_g550_fmv(aircraft_year, aircraft_aftt, engine_program, engine_program_tier)
     elif "G650" in model_upper or "G700" in model_upper or "G600" in model_upper or "G500" in model_upper:
-        fmv_millions = get_g550_fmv(aircraft_year, aircraft_aftt, engine_program)  # use G550 curve as proxy for other Gulfstreams
+        fmv_millions = get_g550_fmv(aircraft_year, aircraft_aftt, engine_program, engine_program_tier)  # use G550 curve as proxy for other Gulfstreams
     else:
         fmv_millions = get_generic_fmv(aircraft_year, aircraft_make, aircraft_model, aircraft_aftt, engine_program)
 
