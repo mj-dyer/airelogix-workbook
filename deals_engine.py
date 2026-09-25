@@ -13,7 +13,7 @@ from typing import Optional
 
 # ── Rate methodology ──────────────────────────────────────────────────────────
 SOFR_OIS_SPREAD_BPS = 200  # 200bps flat spread over SOFR OIS for GDSCR illustration
-SOFR_OIS_FALLBACK = 0.0430  # SOFR OIS ~4.30% as of Q1 2026; update periodically
+SOFR_OIS_FALLBACK = 0.0387  # SOFR ~3.87% as of 2026-09-23 (NY Fed); update periodically
 
 
 # ── Collateral engine (XLS+ curve v3) ────────────────────────────────────────
@@ -285,7 +285,12 @@ def monthly_payment(principal: float, annual_rate: float, term_months: int,
 
 
 # Vintage-specific XLS+ base depreciation rates (bull, base, bear).
-# Source: XLS+ curve handoff doc v3 — locked from 25 closed comps. Do not modify.
+# Source: XLS+ curve handoff doc v3 — locked from 25 closed comps.
+# 2014-2016 base recalibrated 2026-09-24: a real 2016 SN 560-6213 deal (lender
+# quote, 60mo/84mo balloons) implied ~5.8%/yr pre-charter-deduct depreciation,
+# well above the 3.0% base and even above the 4.8% bear case. Moved base to
+# 4.4% (midpoint between old base and lender-implied) for 2014-2016 only —
+# no real-deal evidence yet for other vintage buckets, left those alone.
 XLS_DEPR_RATES = {
     2008: (0.020, 0.035, 0.055),
     2009: (0.020, 0.035, 0.055),
@@ -293,9 +298,9 @@ XLS_DEPR_RATES = {
     2011: (0.018, 0.030, 0.048),
     2012: (0.018, 0.030, 0.048),
     2013: (0.018, 0.030, 0.048),
-    2014: (0.015, 0.030, 0.048),
-    2015: (0.015, 0.030, 0.048),
-    2016: (0.015, 0.030, 0.048),
+    2014: (0.015, 0.044, 0.048),
+    2015: (0.015, 0.044, 0.048),
+    2016: (0.015, 0.044, 0.048),
     2017: (0.025, 0.045, 0.065),
     2018: (0.025, 0.045, 0.065),
     2019: (0.025, 0.045, 0.065),
