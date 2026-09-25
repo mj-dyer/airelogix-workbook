@@ -382,6 +382,39 @@ def get_balloon(loan: float, year: int, term_months: int,
     return loan * ((1 - depr_rate) ** term_years)
 
 
+# Third-party charter utilization deduct — house policy, calibrated 2026-09-24.
+# No deduct at or below 20% charter (confirmed by existing "Valuations assume
+# charter usage <20%" disclaimer already in the borrower app). Above 20%, a
+# real 2016 XLS+ deal (35% charter, lender-quoted balloons at 60mo/84mo)
+# implied a total value penalty of ~10% of purchase price, amortized evenly
+# over the loan term (deduct = total_pool / term_years — matched both real
+# balloons within ~2.5%). Only two rounded data points from one lender on one
+# deal exist above the threshold, so the shape between 20% and 35% (and above
+# 35%) is a linear extrapolation through those two points, not a validated
+# curve — revisit if a second real deal at a different charter% surfaces.
+# Aircraft-agnostic: charter wear/utilization risk isn't airframe-specific the
+# way the collateral curves are, so this applies uniformly across XLS+/CL350/G550.
+CHARTER_DEDUCT_THRESHOLD = 0.20       # no deduct at or below this utilization
+CHARTER_DEDUCT_CALIBRATION_PCT = 0.35  # the real deal's charter utilization
+CHARTER_DEDUCT_CALIBRATION_POOL = 0.10  # ...implied this total penalty, as a fraction of PP
+
+
+def get_charter_deduct(purchase_price: float, charter_pct: float, term_months: int) -> float:
+    """
+    Dollar deduct to subtract from the loan-balance balloon (get_balloon()) for
+    third-party charter utilization above the no-deduct threshold. Returns 0
+    below the threshold. charter_pct is a fraction (0.35 = 35%), not bps.
+    """
+    if not purchase_price or not term_months or charter_pct <= CHARTER_DEDUCT_THRESHOLD:
+        return 0.0
+    pool_pct = (CHARTER_DEDUCT_CALIBRATION_POOL /
+                (CHARTER_DEDUCT_CALIBRATION_PCT - CHARTER_DEDUCT_THRESHOLD)
+                ) * (charter_pct - CHARTER_DEDUCT_THRESHOLD)
+    total_pool = pool_pct * purchase_price
+    term_years = term_months / 12
+    return total_pool / term_years
+
+
 # ── GDSCR scoring (Factor 1) ──────────────────────────────────────────────────
 
 
@@ -691,6 +724,9 @@ def run_analysis(submission: dict) -> dict:
     engine_program = aircraft_data.get("engineProgram", "")
     purchase_price_raw = str(aircraft_data.get("purchasePrice", "0")).replace(",", "").replace("$", "")
     purchase_price = float(purchase_price_raw or 0)
+    # No intake field captures this yet (2026-09-24) — defaults to 0 (no deduct)
+    # until a charter-utilization field is added to the wizard.
+    charter_pct = float(aircraft_data.get("charterPct", 0) or 0)
 
     aircraft_age = cur_year - aircraft_year
     aircraft_description = f"{aircraft_year} {aircraft_make} {aircraft_model}".strip()
@@ -741,6 +777,7 @@ def run_analysis(submission: dict) -> dict:
     )
 
     balloon_pmt = get_balloon(loan_amount, aircraft_year, term_months, aircraft_make, aircraft_model)
+    balloon_pmt -= get_charter_deduct(purchase_price, charter_pct, term_months)
     monthly_pmt = monthly_payment(loan_amount, illustrative_rate, term_months, balloon_pmt)
     annual_aircraft_ds = monthly_pmt * 12
     projected_fmv_at_maturity = get_projected_fmv_at_maturity(
