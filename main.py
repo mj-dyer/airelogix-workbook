@@ -243,6 +243,10 @@ class IOISubmission(BaseModel):
     officerEmail: str
     officerTitle: Optional[str] = ""
     officerPhone: Optional[str] = ""
+    # "fixed" or "floating" — a real structured type instead of inferring it
+    # from the index string. Defaults to "fixed" for pre-existing call sites
+    # (upload-based IOI placeholder) that don't send this yet.
+    rateType: Optional[str] = "fixed"
     allInRate: float
     spread: Optional[int] = None
     index: Optional[str] = "SOFR OIS"
