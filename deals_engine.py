@@ -788,16 +788,20 @@ def run_analysis(submission: dict) -> dict:
     ltv_vs_fmv = loan_amount / fmv if fmv else ltv
 
     # Term
-    term_str = str(loan_prefs.get("preferredTerm", "120"))
+    # Curve/term horizon policy (2026-10-20): the engine only models out to the
+    # full 10yr (120mo) ceiling when the borrower specifically requested that
+    # term during intake. Any unset/non-numeric/out-of-range value (including
+    # "flexible") falls back to a 7yr (84mo) default ceiling instead.
+    term_str = str(loan_prefs.get("preferredTerm", "flexible"))
     try:
         # Strip any text, extract digits only
         import re as _re
         term_digits = _re.sub(r"[^0-9]", "", term_str)
-        term_months = int(term_digits) if term_digits else 120
+        term_months = int(term_digits) if term_digits else 84
         if term_months < 12 or term_months > 300:
-            term_months = 120  # sanity clamp
+            term_months = 84  # sanity clamp — same default-ceiling fallback
     except (ValueError, TypeError):
-        term_months = 120
+        term_months = 84
 
     # Illustrative rate: SOFR OIS + 200bps
     illustrative_rate = SOFR_OIS_FALLBACK + SOFR_OIS_SPREAD_BPS / 10000

@@ -518,6 +518,7 @@ def get_my_deal(user: dict = Depends(get_current_user)):
             "purchasePrice": analysis.get("transaction", {}).get("purchasePrice", 0),
             "termMonths": analysis.get("transaction", {}).get("termMonths", 60),
             "illustrativeRate": analysis.get("transaction", {}).get("illustrativeRate", 6.50),
+            "gdscr": analysis.get("gdscr", {}).get("gdscr", 0),
             "ioiCount": match.get("ioiCount", 0),
             "status": match.get("status", "under_review"),
             "submittedDate": match.get("receivedDate", ""),
