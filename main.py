@@ -118,6 +118,7 @@ ALLOWED_ORIGINS = [
     "https://lender.vaerofinance.com",
     "https://aire-logix-brand-preview.vercel.app",
     "https://lender-brand-preview.vercel.app",
+    "https://vaero-chat-onboarding.vercel.app",
     "http://localhost:8123",
     "http://localhost:8177",
     "http://localhost:3000",
