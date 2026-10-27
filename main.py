@@ -1448,6 +1448,8 @@ def _build_summary(extracted: dict) -> dict:
             "documentSourced": True,
             "dataConfidence": extracted.get("dataConfidence", "high"),
             "isCorporate": False,
+            "agi": str(int(extracted.get("agi", 0) or 0)),
+            "federalTaxesPaid": str(int(extracted.get("federalTaxesPaid", 0) or 0)),
         }
 
 
