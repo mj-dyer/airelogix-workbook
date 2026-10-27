@@ -898,9 +898,18 @@ def run_analysis(submission: dict) -> dict:
             stated_net_worth = max(0, liquid_assets - total_liabilities)
 
         qualifying_income = recurring_cash
-        eff_tax_rate = 0.36
-        taxes_paid = qualifying_income * eff_tax_rate
-        after_tax_qualifying = qualifying_income * (1 - eff_tax_rate)
+        real_federal_taxes_paid = _parse_num(financial.get("federalTaxesPaid", 0))
+        if real_federal_taxes_paid > 0 and qualifying_income > 0:
+            # Real tax return on file -- use actual taxes paid, not an assumption.
+            taxes_paid = real_federal_taxes_paid
+            after_tax_qualifying = max(0.0, qualifying_income - taxes_paid)
+            eff_tax_rate = taxes_paid / qualifying_income
+        else:
+            # Self-reported income, no tax return uploaded -- fall back to a
+            # flat assumed rate since there's no real figure to use instead.
+            eff_tax_rate = 0.36
+            taxes_paid = qualifying_income * eff_tax_rate
+            after_tax_qualifying = qualifying_income * (1 - eff_tax_rate)
         has_w2 = borrower_type == "individual"
         k1_entities = 1 if borrower_type == "individual" else 2
         debt_to_ebitda = 0
