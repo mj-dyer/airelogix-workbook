@@ -865,6 +865,7 @@ Return ONLY a JSON object with exactly this structure:
 }
 
 Rules:
+- governingYear = the LOWER-income of the two tax years provided (the same conservative year used for qualifyingIncome below) -- agi and federalTaxesPaid must both come from this same year's return, never a different year
 - qualifyingIncome = sum of all qualifying K-1 Box 1 income from the LOWER year + wages lower year + interest + dividends
 - agi = Adjusted Gross Income from Form 1040 Line 11 for the governing year
 - federalTaxesPaid = total federal income taxes paid in cash for the governing year (estimated payments + withholding minus any refund received)

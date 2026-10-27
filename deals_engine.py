@@ -1264,8 +1264,8 @@ def run_analysis(submission: dict) -> dict:
     revenue_data = financial.get("revenue", {}) or {} if is_corporate else {}
     stmt_quality = financial.get("financialStatementQuality", "") if is_corporate else ""
     corp_entity_name = financial.get("entityName", borrower_name) if is_corporate else ""
-    _governing_year = financial.get("governingYear", cur_year - 1) if is_corporate else cur_year - 1
-    _tax_years = financial.get("taxYears", [cur_year - 2, cur_year - 1]) if is_corporate else [cur_year - 2, cur_year - 1]
+    _governing_year = financial.get("governingYear") or cur_year - 1
+    _tax_years = financial.get("taxYears") or [cur_year - 2, cur_year - 1]
     _year1_total = float(ebitda_data.get("year1", qualifying_income)) if is_corporate else qualifying_income
     _year2_total = float(ebitda_data.get("year2", qualifying_income)) if is_corporate else qualifying_income
 
