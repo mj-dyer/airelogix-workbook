@@ -106,7 +106,8 @@ from deals_engine import run_analysis
 from deals_store import (
     save_deal, load_deal, list_deals, list_deals_by_user,
     update_deal_status, save_ioi, load_iois, generate_deal_id,
-    save_ioi_feedback, load_declined_iois, clear_ioi_decline
+    save_ioi_feedback, load_declined_iois, clear_ioi_decline,
+    save_lead, mark_lead_converted
 )
 from bio_engine import generate_bio
 
@@ -379,6 +380,15 @@ def submit_deal(request: Request, submission: DealSubmission, background_tasks: 
         save_deal(deal)
         print(f"[/deals] saved {deal_id}")
 
+        # Mark any pre-account lead for this email as converted, so follow-up
+        # logic knows not to nudge someone who already finished. Never let a
+        # lead-matching issue break a real submission.
+        try:
+            if personal.get("email"):
+                mark_lead_converted(personal["email"], deal_id)
+        except Exception as lead_err:
+            print(f"[/deals] lead conversion mark failed (non-fatal): {lead_err}")
+
         # Fire bio research immediately in the background — ready before underwriter opens the deal
         background_tasks.add_task(
             generate_bio,
@@ -419,6 +429,31 @@ def submit_deal(request: Request, submission: DealSubmission, background_tasks: 
     except Exception as e:
         err = traceback.format_exc()
         print(f"[/deals] ERROR:\n{err}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class LeadCapture(BaseModel):
+    email: str
+    firstName: Optional[str] = ""
+    lastName: Optional[str] = ""
+    # Whatever the wizard's opening-sequence state looks like at the moment
+    # Personal Info is completed -- deliberately untyped/opaque, same reason
+    # IOI/deal data is stored as a JSON blob rather than a rigid schema: this
+    # is a pre-account capture and the wizard's early steps can evolve
+    # without needing a matching backend change every time.
+    openingAnswers: Optional[dict] = {}
+
+
+@app.post("/leads")
+@limiter.limit("20/hour")
+def capture_lead(request: Request, lead: LeadCapture):
+    email = (lead.email or "").strip()
+    if "@" not in email:
+        raise HTTPException(status_code=400, detail="Valid email required")
+    try:
+        save_lead(email, lead.dict())
+        return {"success": True}
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 

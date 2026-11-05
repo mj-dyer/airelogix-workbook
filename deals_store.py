@@ -59,6 +59,19 @@ def _ensure_schema():
         conn.run("CREATE INDEX IF NOT EXISTS idx_deals_created ON deals(created_at DESC)")
         conn.run("CREATE INDEX IF NOT EXISTS idx_deals_borrower_user ON deals(borrower_user_id)")
         conn.run("CREATE INDEX IF NOT EXISTS idx_iois_deal ON iois(deal_id)")
+        # Pre-account lead capture -- a borrower who completes the wizard's
+        # Personal Info step but abandons before final submission still
+        # leaves a record Vaero can follow up with. Email is the natural key
+        # since there's no account yet to key on.
+        conn.run("""
+            CREATE TABLE IF NOT EXISTS leads (
+                email             TEXT PRIMARY KEY,
+                data              TEXT NOT NULL,
+                converted_deal_id TEXT,
+                created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
     finally:
         conn.close()
 
@@ -73,10 +86,12 @@ except Exception as e:
 # ── File storage fallback ─────────────────────────────────────────────────────
 DEALS_DIR = os.environ.get("DEALS_DIR", "/tmp/airelogix_deals")
 IOIS_DIR  = os.environ.get("IOIS_DIR",  "/tmp/airelogix_iois")
+LEADS_DIR = os.environ.get("LEADS_DIR", "/tmp/airelogix_leads")
 
 def _ensure_dirs():
     os.makedirs(DEALS_DIR, exist_ok=True)
     os.makedirs(IOIS_DIR, exist_ok=True)
+    os.makedirs(LEADS_DIR, exist_ok=True)
 
 # ── ID generation ─────────────────────────────────────────────────────────────
 def generate_deal_id() -> str:
@@ -402,6 +417,57 @@ def load_declined_iois(institution: str) -> list:
                         deal = load_deal(deal_id) or {}
                         results.append({"dealId": deal_id, "ioi": ioi, "deal": deal})
     return results
+
+
+# ── Lead operations ───────────────────────────────────────────────────────────
+
+def save_lead(email: str, data: dict) -> None:
+    """Upsert a pre-account lead by email."""
+    email = email.strip().lower()
+    if _USE_DB:
+        conn = _get_conn()
+        try:
+            conn.run("""
+                INSERT INTO leads (email, data)
+                VALUES (:email, :data)
+                ON CONFLICT (email) DO UPDATE SET data=EXCLUDED.data, updated_at=NOW()
+            """, email=email, data=json.dumps(data))
+        finally:
+            conn.close()
+    else:
+        _ensure_dirs()
+        p = os.path.join(LEADS_DIR, f"{email}.json")
+        existing = json.load(open(p)) if os.path.exists(p) else {}
+        existing.update(data)
+        existing["email"] = email
+        existing["updatedAt"] = datetime.now(timezone.utc).isoformat()
+        with open(p, "w") as f:
+            json.dump(existing, f, indent=2)
+
+
+def mark_lead_converted(email: str, deal_id: str) -> None:
+    """Called once a lead's email completes a real submission, so follow-up
+    logic can skip anyone who already finished."""
+    if not email:
+        return
+    email = email.strip().lower()
+    if _USE_DB:
+        conn = _get_conn()
+        try:
+            conn.run(
+                "UPDATE leads SET converted_deal_id=:deal_id, updated_at=NOW() WHERE email=:email",
+                deal_id=deal_id, email=email
+            )
+        finally:
+            conn.close()
+    else:
+        _ensure_dirs()
+        p = os.path.join(LEADS_DIR, f"{email}.json")
+        if os.path.exists(p):
+            existing = json.load(open(p))
+            existing["convertedDealId"] = deal_id
+            with open(p, "w") as f:
+                json.dump(existing, f, indent=2)
 
 
 # ── Calloway Demo Seed ────────────────────────────────────────────────────────
