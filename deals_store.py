@@ -72,26 +72,39 @@ def _ensure_schema():
                 updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
         """)
-        # Lender onboarding -- one table, status-driven (pending/approved/
-        # declined/inactive), same convention as deals/leads: a few promoted
-        # columns for querying, everything else (structure appetite, maxLtv,
-        # recourse, rate type, deal size range, geography, charter appetite,
-        # billing info, internal notes) lives in the JSON blob.
-        conn.run("""
-            CREATE TABLE IF NOT EXISTS lenders (
-                lender_id        TEXT PRIMARY KEY,
-                status           TEXT NOT NULL DEFAULT 'pending',
-                institution_name TEXT,
-                contact_email    TEXT,
-                data             TEXT NOT NULL,
-                lender_user_id   TEXT,
-                created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )
-        """)
-        conn.run("CREATE INDEX IF NOT EXISTS idx_lenders_status ON lenders(status)")
     finally:
         conn.close()
+
+    # Lender onboarding -- deliberately isolated from the core schema above.
+    # A problem in this block must never take deals/iois/leads persistence
+    # down with it the way one shared try/except previously could (any new
+    # addition failing here would silently flip _USE_DB to False for
+    # everything, not just this table).
+    try:
+        conn2 = _get_conn()
+        try:
+            # One table, status-driven (pending/approved/declined/inactive),
+            # same convention as deals/leads: a few promoted columns for
+            # querying, everything else (structure appetite, maxLtv,
+            # recourse, rate type, deal size range, geography, charter
+            # appetite, billing info, internal notes) lives in the JSON blob.
+            conn2.run("""
+                CREATE TABLE IF NOT EXISTS lenders (
+                    lender_id        TEXT PRIMARY KEY,
+                    status           TEXT NOT NULL DEFAULT 'pending',
+                    institution_name TEXT,
+                    contact_email    TEXT,
+                    data             TEXT NOT NULL,
+                    lender_user_id   TEXT,
+                    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+            conn2.run("CREATE INDEX IF NOT EXISTS idx_lenders_status ON lenders(status)")
+        finally:
+            conn2.close()
+    except Exception as e:
+        print(f"[deals_store] WARNING: lenders schema setup failed (non-fatal, core schema unaffected): {type(e).__name__}: {e}")
 
 try:
     _ensure_schema()
