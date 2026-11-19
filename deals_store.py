@@ -72,6 +72,24 @@ def _ensure_schema():
                 updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
         """)
+        # Lender onboarding -- one table, status-driven (pending/approved/
+        # declined/inactive), same convention as deals/leads: a few promoted
+        # columns for querying, everything else (structure appetite, maxLtv,
+        # recourse, rate type, deal size range, geography, charter appetite,
+        # billing info, internal notes) lives in the JSON blob.
+        conn.run("""
+            CREATE TABLE IF NOT EXISTS lenders (
+                lender_id        TEXT PRIMARY KEY,
+                status           TEXT NOT NULL DEFAULT 'pending',
+                institution_name TEXT,
+                contact_email    TEXT,
+                data             TEXT NOT NULL,
+                lender_user_id   TEXT,
+                created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        conn.run("CREATE INDEX IF NOT EXISTS idx_lenders_status ON lenders(status)")
     finally:
         conn.close()
 
@@ -84,18 +102,23 @@ except Exception as e:
     _USE_DB = False
 
 # ── File storage fallback ─────────────────────────────────────────────────────
-DEALS_DIR = os.environ.get("DEALS_DIR", "/tmp/airelogix_deals")
-IOIS_DIR  = os.environ.get("IOIS_DIR",  "/tmp/airelogix_iois")
-LEADS_DIR = os.environ.get("LEADS_DIR", "/tmp/airelogix_leads")
+DEALS_DIR   = os.environ.get("DEALS_DIR",   "/tmp/airelogix_deals")
+IOIS_DIR    = os.environ.get("IOIS_DIR",    "/tmp/airelogix_iois")
+LEADS_DIR   = os.environ.get("LEADS_DIR",   "/tmp/airelogix_leads")
+LENDERS_DIR = os.environ.get("LENDERS_DIR", "/tmp/airelogix_lenders")
 
 def _ensure_dirs():
     os.makedirs(DEALS_DIR, exist_ok=True)
     os.makedirs(IOIS_DIR, exist_ok=True)
     os.makedirs(LEADS_DIR, exist_ok=True)
+    os.makedirs(LENDERS_DIR, exist_ok=True)
 
 # ── ID generation ─────────────────────────────────────────────────────────────
 def generate_deal_id() -> str:
     return f"AL-{datetime.now().year}-{str(uuid.uuid4())[:8].upper()}"
+
+def generate_lender_id() -> str:
+    return f"LEND-{datetime.now().year}-{str(uuid.uuid4())[:8].upper()}"
 
 # ── Deal operations ───────────────────────────────────────────────────────────
 def save_deal(deal: dict) -> str:
@@ -468,6 +491,95 @@ def mark_lead_converted(email: str, deal_id: str) -> None:
             existing["convertedDealId"] = deal_id
             with open(p, "w") as f:
                 json.dump(existing, f, indent=2)
+
+
+# ── Lender operations ─────────────────────────────────────────────────────────
+
+def save_lender_application(data: dict) -> str:
+    """Create a new lender record from a submitted application -- always
+    starts at status='pending', regardless of what the submission says."""
+    lender_id = generate_lender_id()
+    data = dict(data)
+    data["lenderId"] = lender_id
+    data["status"] = "pending"
+    now = datetime.now(timezone.utc).isoformat()
+    data["createdAt"] = now
+    data["updatedAt"] = now
+
+    if _USE_DB:
+        conn = _get_conn()
+        try:
+            conn.run("""
+                INSERT INTO lenders (lender_id, status, institution_name, contact_email, data)
+                VALUES (:lender_id, 'pending', :name, :email, :data)
+            """, lender_id=lender_id, name=data.get("institutionName", ""),
+                 email=data.get("contactEmail", ""), data=json.dumps(data))
+        finally:
+            conn.close()
+    else:
+        _ensure_dirs()
+        with open(os.path.join(LENDERS_DIR, f"{lender_id}.json"), "w") as f:
+            json.dump(data, f, indent=2)
+    return lender_id
+
+
+def list_lenders() -> list:
+    if _USE_DB:
+        conn = _get_conn()
+        try:
+            rows = conn.run("SELECT data FROM lenders ORDER BY created_at DESC")
+            return [json.loads(r[0]) for r in rows]
+        finally:
+            conn.close()
+    else:
+        _ensure_dirs()
+        out = []
+        for fname in os.listdir(LENDERS_DIR):
+            if fname.endswith(".json"):
+                out.append(json.load(open(os.path.join(LENDERS_DIR, fname))))
+        return out
+
+
+def get_lender(lender_id: str) -> Optional[dict]:
+    if _USE_DB:
+        conn = _get_conn()
+        try:
+            rows = conn.run("SELECT data FROM lenders WHERE lender_id=:id", id=lender_id)
+            return json.loads(rows[0][0]) if rows else None
+        finally:
+            conn.close()
+    else:
+        _ensure_dirs()
+        p = os.path.join(LENDERS_DIR, f"{lender_id}.json")
+        return json.load(open(p)) if os.path.exists(p) else None
+
+
+def update_lender(lender_id: str, updates: dict) -> Optional[dict]:
+    """Merge `updates` into the lender's stored data. Pass status in
+    `updates` to approve/decline/deactivate -- it's just a field."""
+    existing = get_lender(lender_id)
+    if existing is None:
+        return None
+    existing.update(updates)
+    existing["updatedAt"] = datetime.now(timezone.utc).isoformat()
+
+    if _USE_DB:
+        conn = _get_conn()
+        try:
+            conn.run("""
+                UPDATE lenders SET data=:data, status=:status,
+                    institution_name=:name, contact_email=:email, updated_at=NOW()
+                WHERE lender_id=:id
+            """, data=json.dumps(existing), status=existing.get("status", "pending"),
+                 name=existing.get("institutionName", ""), email=existing.get("contactEmail", ""),
+                 id=lender_id)
+        finally:
+            conn.close()
+    else:
+        _ensure_dirs()
+        with open(os.path.join(LENDERS_DIR, f"{lender_id}.json"), "w") as f:
+            json.dump(existing, f, indent=2)
+    return existing
 
 
 # ── Calloway Demo Seed ────────────────────────────────────────────────────────

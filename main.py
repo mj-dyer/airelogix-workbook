@@ -107,7 +107,8 @@ from deals_store import (
     save_deal, load_deal, list_deals, list_deals_by_user,
     update_deal_status, save_ioi, load_iois, generate_deal_id,
     save_ioi_feedback, load_declined_iois, clear_ioi_decline,
-    save_lead, mark_lead_converted
+    save_lead, mark_lead_converted,
+    save_lender_application, list_lenders, get_lender, update_lender
 )
 from bio_engine import generate_bio
 
@@ -117,6 +118,8 @@ ALLOWED_ORIGINS = [
     "https://vaerofinance.com",
     "https://dev.vaerofinance.com",
     "https://lender.vaerofinance.com",
+    "https://partners.vaerofinance.com",
+    "https://ops.vaerofinance.com",
     "https://aire-logix-brand-preview.vercel.app",
     "https://lender-brand-preview.vercel.app",
     "https://vaero-chat-onboarding.vercel.app",
@@ -197,6 +200,19 @@ def get_current_user(request: Request) -> dict:
             print(f"[auth] JWT rejected: {type(e).__name__}: {e} | could not decode unverified claims: {decode_err}")
         raise HTTPException(status_code=401, detail="Invalid session")
     return payload  # payload["sub"] = Supabase user UUID, payload["email"] = email
+
+# Minimal admin gate -- one operator today, so a plain email allowlist is the
+# proportionate choice over a full roles table. Set ADMIN_EMAILS on Railway
+# (comma-separated) to whoever should be able to reach /admin/lenders*.
+ADMIN_EMAILS = set(
+    e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()
+)
+
+def require_admin(user: dict = Depends(get_current_user)) -> dict:
+    email = (user.get("email") or "").strip().lower()
+    if not ADMIN_EMAILS or email not in ADMIN_EMAILS:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return user
 
 class WorkbookRequest(BaseModel):
     analysis: Any
@@ -455,6 +471,92 @@ def capture_lead(request: Request, lead: LeadCapture):
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Lender onboarding ──────────────────────────────────────────────────────────
+
+class LenderApplication(BaseModel):
+    institutionName: str
+    institutionType: Optional[str] = ""  # commercial_bank | private_bank | non_bank | community_bank
+    contactName: str
+    contactEmail: str
+    contactPhone: Optional[str] = ""
+    structureAppetite: Optional[list] = []  # subset of balloon | interest_only | fully_amortizing
+    maxLtv: Optional[float] = None
+    recoursePreference: Optional[str] = ""  # full | limited | non_recourse
+    rateTypePreference: Optional[str] = "both"
+    dealSizeMin: Optional[float] = None
+    dealSizeMax: Optional[float] = None
+    geography: Optional[str] = ""
+    maxCharterPct: Optional[float] = None  # Part 135 third-party charter appetite, 0-100
+    billingContactName: Optional[str] = ""
+    billingEmail: Optional[str] = ""
+    billingAddressLine1: Optional[str] = ""
+    billingAddressLine2: Optional[str] = ""
+    billingCity: Optional[str] = ""
+    billingState: Optional[str] = ""
+    billingZip: Optional[str] = ""
+
+
+@app.post("/lender-applications")
+@limiter.limit("10/hour")
+def submit_lender_application(request: Request, application: LenderApplication):
+    if "@" not in application.contactEmail:
+        raise HTTPException(status_code=400, detail="Valid contact email required")
+    try:
+        lender_id = save_lender_application(application.dict())
+        return {"success": True, "lenderId": lender_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class LenderUpdate(BaseModel):
+    status: Optional[str] = None  # pending | approved | declined | inactive
+    institutionName: Optional[str] = None
+    institutionType: Optional[str] = None
+    contactName: Optional[str] = None
+    contactEmail: Optional[str] = None
+    contactPhone: Optional[str] = None
+    structureAppetite: Optional[list] = None
+    maxLtv: Optional[float] = None
+    recoursePreference: Optional[str] = None
+    rateTypePreference: Optional[str] = None
+    dealSizeMin: Optional[float] = None
+    dealSizeMax: Optional[float] = None
+    geography: Optional[str] = None
+    maxCharterPct: Optional[float] = None
+    billingContactName: Optional[str] = None
+    billingEmail: Optional[str] = None
+    billingAddressLine1: Optional[str] = None
+    billingAddressLine2: Optional[str] = None
+    billingCity: Optional[str] = None
+    billingState: Optional[str] = None
+    billingZip: Optional[str] = None
+    notes: Optional[str] = None  # internal only -- never sent back to the applicant
+
+
+@app.get("/admin/lenders")
+def admin_list_lenders(user: dict = Depends(require_admin)):
+    return {"lenders": list_lenders()}
+
+
+@app.get("/admin/lenders/{lender_id}")
+def admin_get_lender(lender_id: str, user: dict = Depends(require_admin)):
+    lender = get_lender(lender_id)
+    if lender is None:
+        raise HTTPException(status_code=404, detail=f"Lender {lender_id} not found")
+    return lender
+
+
+@app.patch("/admin/lenders/{lender_id}")
+def admin_update_lender(lender_id: str, update: LenderUpdate, user: dict = Depends(require_admin)):
+    updates = update.dict(exclude_unset=True)
+    if "status" in updates and updates["status"] not in ("pending", "approved", "declined", "inactive"):
+        raise HTTPException(status_code=400, detail="Invalid status")
+    lender = update_lender(lender_id, updates)
+    if lender is None:
+        raise HTTPException(status_code=404, detail=f"Lender {lender_id} not found")
+    return lender
 
 
 # A deal's identity stays withheld from lenders until the borrower has
