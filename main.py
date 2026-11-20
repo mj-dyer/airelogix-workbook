@@ -487,6 +487,11 @@ class LenderApplication(BaseModel):
     # national_bank | regional_bank | community_bank | credit_union | non_bank_lender | private_bank | other
     institutionType: Optional[str] = ""
     institutionAssetSize: Optional[str] = ""  # bracket, e.g. "under_1b" | "1b_10b" | "10b_50b" | "50b_250b" | "over_250b"
+    institutionAddressLine1: Optional[str] = ""
+    institutionAddressLine2: Optional[str] = ""
+    institutionCity: Optional[str] = ""
+    institutionState: Optional[str] = ""
+    institutionZip: Optional[str] = ""
     contacts: List[LenderContact] = []
     structureAppetite: Optional[list] = []  # subset of balloon | interest_only | fully_amortizing
     rateTypePreference: Optional[str] = "both"  # fixed | floating | both
@@ -499,13 +504,14 @@ class LenderApplication(BaseModel):
     citizenshipRestriction: Optional[str] = ""  # us_only | open_non_us
     loanPurposeAppetite: Optional[list] = []  # purchase | refinance | cash_out
     prepaymentPreferences: Optional[list] = []  # subset of negotiable | step_down | yield_maintenance | lockout
-    syndicationPosture: Optional[str] = ""  # lead_only | lead_plus_syndicate | will_participate
+    originationPosture: Optional[str] = ""  # does_not_lead | leads_only | leads_and_syndicates
+    participationAppetite: Optional[bool] = False  # open to participating in deals led by another institution
     maxLtv: Optional[float] = None
     dealSizeMin: Optional[float] = None
     dealSizeMax: Optional[float] = None
     thirdPartyCharterAppetite: Optional[bool] = False  # opt-in; maxCharterPct only meaningful when true
     maxCharterPct: Optional[float] = None  # Part 135 3rd party charter appetite, 0-100
-    charterOperatorFinancingAppetite: Optional[bool] = False  # open to deals where repayment source is solely charter income
+    charterOperatorFinancingAppetite: Optional[bool] = False  # open to deals where repayment source is primarily charter income
     geographyScope: Optional[str] = "national"  # national | regional
     geographyStates: Optional[List[str]] = []  # used when geographyScope == "regional"
     internationalAppetite: Optional[bool] = False
@@ -540,6 +546,11 @@ class LenderUpdate(BaseModel):
     institutionName: Optional[str] = None
     institutionType: Optional[str] = None
     institutionAssetSize: Optional[str] = None
+    institutionAddressLine1: Optional[str] = None
+    institutionAddressLine2: Optional[str] = None
+    institutionCity: Optional[str] = None
+    institutionState: Optional[str] = None
+    institutionZip: Optional[str] = None
     contacts: Optional[List[LenderContact]] = None
     structureAppetite: Optional[list] = None
     rateTypePreference: Optional[str] = None
@@ -552,7 +563,8 @@ class LenderUpdate(BaseModel):
     citizenshipRestriction: Optional[str] = None
     loanPurposeAppetite: Optional[list] = None
     prepaymentPreferences: Optional[list] = None
-    syndicationPosture: Optional[str] = None
+    originationPosture: Optional[str] = None
+    participationAppetite: Optional[bool] = None
     maxLtv: Optional[float] = None
     dealSizeMin: Optional[float] = None
     dealSizeMax: Optional[float] = None
