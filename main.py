@@ -508,6 +508,8 @@ class LenderApplication(BaseModel):
     prepaymentPreferences: Optional[list] = []  # subset of negotiable | step_down | yield_maintenance | lockout
     originationPosture: Optional[str] = ""  # does_not_lead | leads_only | leads_and_syndicates
     participationAppetite: Optional[bool] = False  # open to participating in deals led by another institution
+    typicalTimeToClose: Optional[str] = ""  # 1_2_weeks | 2_4_weeks | 30_45_days | 45_60_days
+    timeSensitiveDealsAppetite: Optional[bool] = False  # willingness to be routed rush/time-sensitive deals, separate from baseline speed
     maxLtv: Optional[float] = None
     dealSizeMin: Optional[float] = None
     dealSizeMax: Optional[float] = None
@@ -569,6 +571,8 @@ class LenderUpdate(BaseModel):
     prepaymentPreferences: Optional[list] = None
     originationPosture: Optional[str] = None
     participationAppetite: Optional[bool] = None
+    typicalTimeToClose: Optional[str] = None
+    timeSensitiveDealsAppetite: Optional[bool] = None
     maxLtv: Optional[float] = None
     dealSizeMin: Optional[float] = None
     dealSizeMax: Optional[float] = None

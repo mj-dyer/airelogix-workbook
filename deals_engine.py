@@ -1317,7 +1317,9 @@ def run_analysis(submission: dict) -> dict:
             # "new" | "pre_owned" | "" (not asked -- piston/single-engine-turboprop exemption)
             "aircraftCondition": aircraft_data.get("aircraftCondition", ""),
             "anticipatedDeliveryDate": aircraft_data.get("anticipatedDeliveryDate", ""),
+            # "yes" | "no" | "maybe" -- "maybe" routes to a lender pool mixing both
             "constructionFinancingNeeded": aircraft_data.get("constructionFinancingNeeded", ""),
+            "anticipatedClosingDate": aircraft_data.get("anticipatedClosingDate", ""),
         },
         "collateral": {
             "year": aircraft_year,
