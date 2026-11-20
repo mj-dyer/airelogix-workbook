@@ -493,18 +493,19 @@ class LenderApplication(BaseModel):
     recoursePreference: Optional[str] = ""  # full | limited | non_recourse
     aircraftCategoryAppetite: Optional[list] = []  # piston | turboprop | light_jet | midsize_jet | super_mid_jet | heavy_jet | vlj
     maxAircraftAgeOrigination: Optional[float] = None
-    maxAircraftAgeMaturity: Optional[float] = None
     conditionAppetite: Optional[list] = []  # new | pre_owned
     maxTermYears: Optional[float] = None
     borrowerTypeAppetite: Optional[list] = []  # individual | trust | llc | corporate
     citizenshipRestriction: Optional[str] = ""  # us_only | open_non_us
     loanPurposeAppetite: Optional[list] = []  # purchase | refinance | cash_out
-    prepaymentPreference: Optional[str] = ""  # open | yield_maintenance
-    syndicationPosture: Optional[str] = ""  # lead_only | will_participate
+    prepaymentPreference: Optional[str] = ""  # open | step_down | yield_maintenance | lockout
+    syndicationPosture: Optional[str] = ""  # lead_only | lead_plus_syndicate | will_participate
     maxLtv: Optional[float] = None
     dealSizeMin: Optional[float] = None
     dealSizeMax: Optional[float] = None
-    maxCharterPct: Optional[float] = None  # Part 135 third-party charter appetite, 0-100
+    thirdPartyCharterAppetite: Optional[bool] = False  # opt-in; maxCharterPct only meaningful when true
+    maxCharterPct: Optional[float] = None  # Part 135 3rd party charter appetite, 0-100
+    charterOperatorFinancingAppetite: Optional[bool] = False  # open to deals where repayment source is solely charter income
     geographyScope: Optional[str] = "national"  # national | regional
     geographyStates: Optional[List[str]] = []  # used when geographyScope == "regional"
     internationalAppetite: Optional[bool] = False
@@ -545,7 +546,6 @@ class LenderUpdate(BaseModel):
     recoursePreference: Optional[str] = None
     aircraftCategoryAppetite: Optional[list] = None
     maxAircraftAgeOrigination: Optional[float] = None
-    maxAircraftAgeMaturity: Optional[float] = None
     conditionAppetite: Optional[list] = None
     maxTermYears: Optional[float] = None
     borrowerTypeAppetite: Optional[list] = None
@@ -556,7 +556,9 @@ class LenderUpdate(BaseModel):
     maxLtv: Optional[float] = None
     dealSizeMin: Optional[float] = None
     dealSizeMax: Optional[float] = None
+    thirdPartyCharterAppetite: Optional[bool] = None
     maxCharterPct: Optional[float] = None
+    charterOperatorFinancingAppetite: Optional[bool] = None
     geographyScope: Optional[str] = None
     geographyStates: Optional[List[str]] = None
     internationalAppetite: Optional[bool] = None
