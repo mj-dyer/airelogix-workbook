@@ -1310,6 +1310,14 @@ def run_analysis(submission: dict) -> dict:
             "year": aircraft_year,
             "make": aircraft_make,
             "model": aircraft_model,
+            "thirdPartyCharter": aircraft_data.get("thirdPartyCharter", ""),
+            "charterPct": charter_pct,
+            # "incidental" (Part 91 with some charter) | "operator" (charter-operator financing) | "" (no charter)
+            "charterOperatorType": aircraft_data.get("charterOperatorType", ""),
+            # "new" | "pre_owned" | "" (not asked -- piston/single-engine-turboprop exemption)
+            "aircraftCondition": aircraft_data.get("aircraftCondition", ""),
+            "anticipatedDeliveryDate": aircraft_data.get("anticipatedDeliveryDate", ""),
+            "constructionFinancingNeeded": aircraft_data.get("constructionFinancingNeeded", ""),
         },
         "collateral": {
             "year": aircraft_year,
