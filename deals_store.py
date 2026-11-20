@@ -547,11 +547,13 @@ def save_lender_application(data: dict) -> str:
     if _USE_DB:
         conn = _get_conn()
         try:
+            contacts = data.get("contacts") or []
+            primary_email = contacts[0].get("email", "") if contacts else data.get("contactEmail", "")
             conn.run("""
                 INSERT INTO lenders (lender_id, status, institution_name, contact_email, data)
                 VALUES (:lender_id, 'pending', :name, :email, :data)
             """, lender_id=lender_id, name=data.get("institutionName", ""),
-                 email=data.get("contactEmail", ""), data=json.dumps(data))
+                 email=primary_email, data=json.dumps(data))
         finally:
             conn.close()
     else:
@@ -602,6 +604,8 @@ def update_lender(lender_id: str, updates: dict) -> Optional[dict]:
     existing["updatedAt"] = datetime.now(timezone.utc).isoformat()
 
     if _USE_DB:
+        contacts = existing.get("contacts") or []
+        primary_email = contacts[0].get("email", "") if contacts else existing.get("contactEmail", "")
         conn = _get_conn()
         try:
             conn.run("""
@@ -609,7 +613,7 @@ def update_lender(lender_id: str, updates: dict) -> Optional[dict]:
                     institution_name=:name, contact_email=:email, updated_at=NOW()
                 WHERE lender_id=:id
             """, data=json.dumps(existing), status=existing.get("status", "pending"),
-                 name=existing.get("institutionName", ""), email=existing.get("contactEmail", ""),
+                 name=existing.get("institutionName", ""), email=primary_email,
                  id=lender_id)
         finally:
             conn.close()

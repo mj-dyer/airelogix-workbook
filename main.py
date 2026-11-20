@@ -98,7 +98,7 @@ def _email_ioi_received(to: str, deal_id: str, aircraft: str, institution: str):
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 from generate_workbook import generate_workbook
 from generate_memo import generate_memo
@@ -475,20 +475,40 @@ def capture_lead(request: Request, lead: LeadCapture):
 
 # ── Lender onboarding ──────────────────────────────────────────────────────────
 
+class LenderContact(BaseModel):
+    name: str
+    title: str
+    email: str
+    phones: Optional[List[str]] = []
+
+
 class LenderApplication(BaseModel):
     institutionName: str
-    institutionType: Optional[str] = ""  # commercial_bank | private_bank | non_bank | community_bank
-    contactName: str
-    contactEmail: str
-    contactPhone: Optional[str] = ""
+    # national_bank | regional_bank | community_bank | credit_union | non_bank_lender | private_bank | other
+    institutionType: Optional[str] = ""
+    institutionAssetSize: Optional[str] = ""  # bracket, e.g. "under_1b" | "1b_10b" | "10b_50b" | "50b_250b" | "over_250b"
+    contacts: List[LenderContact] = []
     structureAppetite: Optional[list] = []  # subset of balloon | interest_only | fully_amortizing
-    maxLtv: Optional[float] = None
+    rateTypePreference: Optional[str] = "both"  # fixed | floating | both
     recoursePreference: Optional[str] = ""  # full | limited | non_recourse
-    rateTypePreference: Optional[str] = "both"
+    aircraftCategoryAppetite: Optional[list] = []  # piston | turboprop | light_jet | midsize_jet | super_mid_jet | heavy_jet | vlj
+    maxAircraftAgeOrigination: Optional[float] = None
+    maxAircraftAgeMaturity: Optional[float] = None
+    conditionAppetite: Optional[list] = []  # new | pre_owned
+    maxTermYears: Optional[float] = None
+    borrowerTypeAppetite: Optional[list] = []  # individual | trust | llc | corporate
+    citizenshipRestriction: Optional[str] = ""  # us_only | open_non_us
+    loanPurposeAppetite: Optional[list] = []  # purchase | refinance | cash_out
+    prepaymentPreference: Optional[str] = ""  # open | yield_maintenance
+    syndicationPosture: Optional[str] = ""  # lead_only | will_participate
+    maxLtv: Optional[float] = None
     dealSizeMin: Optional[float] = None
     dealSizeMax: Optional[float] = None
-    geography: Optional[str] = ""
     maxCharterPct: Optional[float] = None  # Part 135 third-party charter appetite, 0-100
+    geographyScope: Optional[str] = "national"  # national | regional
+    geographyStates: Optional[List[str]] = []  # used when geographyScope == "regional"
+    internationalAppetite: Optional[bool] = False
+    internationalCountries: Optional[List[str]] = []
     billingContactName: Optional[str] = ""
     billingEmail: Optional[str] = ""
     billingAddressLine1: Optional[str] = ""
@@ -496,13 +516,17 @@ class LenderApplication(BaseModel):
     billingCity: Optional[str] = ""
     billingState: Optional[str] = ""
     billingZip: Optional[str] = ""
+    tosAccepted: bool = False
+    tosVersion: Optional[str] = ""
 
 
 @app.post("/lender-applications")
 @limiter.limit("10/hour")
 def submit_lender_application(request: Request, application: LenderApplication):
-    if "@" not in application.contactEmail:
-        raise HTTPException(status_code=400, detail="Valid contact email required")
+    if not application.contacts or "@" not in application.contacts[0].email:
+        raise HTTPException(status_code=400, detail="At least one contact with a valid email is required")
+    if not application.tosAccepted:
+        raise HTTPException(status_code=400, detail="Terms of Service acceptance is required")
     try:
         lender_id = save_lender_application(application.dict())
         return {"success": True, "lenderId": lender_id}
@@ -514,17 +538,29 @@ class LenderUpdate(BaseModel):
     status: Optional[str] = None  # pending | approved | declined | inactive
     institutionName: Optional[str] = None
     institutionType: Optional[str] = None
-    contactName: Optional[str] = None
-    contactEmail: Optional[str] = None
-    contactPhone: Optional[str] = None
+    institutionAssetSize: Optional[str] = None
+    contacts: Optional[List[LenderContact]] = None
     structureAppetite: Optional[list] = None
-    maxLtv: Optional[float] = None
-    recoursePreference: Optional[str] = None
     rateTypePreference: Optional[str] = None
+    recoursePreference: Optional[str] = None
+    aircraftCategoryAppetite: Optional[list] = None
+    maxAircraftAgeOrigination: Optional[float] = None
+    maxAircraftAgeMaturity: Optional[float] = None
+    conditionAppetite: Optional[list] = None
+    maxTermYears: Optional[float] = None
+    borrowerTypeAppetite: Optional[list] = None
+    citizenshipRestriction: Optional[str] = None
+    loanPurposeAppetite: Optional[list] = None
+    prepaymentPreference: Optional[str] = None
+    syndicationPosture: Optional[str] = None
+    maxLtv: Optional[float] = None
     dealSizeMin: Optional[float] = None
     dealSizeMax: Optional[float] = None
-    geography: Optional[str] = None
     maxCharterPct: Optional[float] = None
+    geographyScope: Optional[str] = None
+    geographyStates: Optional[List[str]] = None
+    internationalAppetite: Optional[bool] = None
+    internationalCountries: Optional[List[str]] = None
     billingContactName: Optional[str] = None
     billingEmail: Optional[str] = None
     billingAddressLine1: Optional[str] = None
