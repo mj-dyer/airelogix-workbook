@@ -118,7 +118,7 @@ ALLOWED_ORIGINS = [
     "https://vaerofinance.com",
     "https://dev.vaerofinance.com",
     "https://lender.vaerofinance.com",
-    "https://partners.vaerofinance.com",
+    "https://partner.vaerofinance.com",
     "https://ops.vaerofinance.com",
     "https://aire-logix-brand-preview.vercel.app",
     "https://lender-brand-preview.vercel.app",
