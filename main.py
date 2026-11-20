@@ -500,6 +500,7 @@ class LenderApplication(BaseModel):
     fractionalShareAppetite: Optional[bool] = False  # distinct from whole-aircraft category appetite -- fractional is a different collateral/legal structure
     maxAircraftAgeOrigination: Optional[float] = None
     conditionAppetite: Optional[list] = []  # new | pre_owned
+    constructionFinancingAppetite: Optional[bool] = False  # only meaningful when conditionAppetite includes "new"
     maxTermYears: Optional[float] = None
     borrowerTypeAppetite: Optional[list] = []  # individual | trust | llc | corporate
     citizenshipRestriction: Optional[str] = ""  # us_only | open_non_us
@@ -560,6 +561,7 @@ class LenderUpdate(BaseModel):
     fractionalShareAppetite: Optional[bool] = None
     maxAircraftAgeOrigination: Optional[float] = None
     conditionAppetite: Optional[list] = None
+    constructionFinancingAppetite: Optional[bool] = None
     maxTermYears: Optional[float] = None
     borrowerTypeAppetite: Optional[list] = None
     citizenshipRestriction: Optional[str] = None
