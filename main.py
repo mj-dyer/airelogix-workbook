@@ -496,7 +496,8 @@ class LenderApplication(BaseModel):
     structureAppetite: Optional[list] = []  # subset of balloon | interest_only | fully_amortizing
     rateTypePreference: Optional[str] = "both"  # fixed | floating | both
     recoursePreference: Optional[str] = ""  # full | limited | non_recourse
-    aircraftCategoryAppetite: Optional[list] = []  # piston | turboprop | light_jet | midsize_jet | super_mid_jet | heavy_jet | vlj
+    aircraftCategoryAppetite: Optional[list] = []  # piston | turboprop | vlj | light_jet | midsize_jet | super_mid_jet | large_jet | ultra_long_range
+    fractionalShareAppetite: Optional[bool] = False  # distinct from whole-aircraft category appetite -- fractional is a different collateral/legal structure
     maxAircraftAgeOrigination: Optional[float] = None
     conditionAppetite: Optional[list] = []  # new | pre_owned
     maxTermYears: Optional[float] = None
@@ -556,6 +557,7 @@ class LenderUpdate(BaseModel):
     rateTypePreference: Optional[str] = None
     recoursePreference: Optional[str] = None
     aircraftCategoryAppetite: Optional[list] = None
+    fractionalShareAppetite: Optional[bool] = None
     maxAircraftAgeOrigination: Optional[float] = None
     conditionAppetite: Optional[list] = None
     maxTermYears: Optional[float] = None
