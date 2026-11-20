@@ -498,7 +498,7 @@ class LenderApplication(BaseModel):
     borrowerTypeAppetite: Optional[list] = []  # individual | trust | llc | corporate
     citizenshipRestriction: Optional[str] = ""  # us_only | open_non_us
     loanPurposeAppetite: Optional[list] = []  # purchase | refinance | cash_out
-    prepaymentPreference: Optional[str] = ""  # open | step_down | yield_maintenance | lockout
+    prepaymentPreferences: Optional[list] = []  # subset of negotiable | step_down | yield_maintenance | lockout
     syndicationPosture: Optional[str] = ""  # lead_only | lead_plus_syndicate | will_participate
     maxLtv: Optional[float] = None
     dealSizeMin: Optional[float] = None
@@ -551,7 +551,7 @@ class LenderUpdate(BaseModel):
     borrowerTypeAppetite: Optional[list] = None
     citizenshipRestriction: Optional[str] = None
     loanPurposeAppetite: Optional[list] = None
-    prepaymentPreference: Optional[str] = None
+    prepaymentPreferences: Optional[list] = None
     syndicationPosture: Optional[str] = None
     maxLtv: Optional[float] = None
     dealSizeMin: Optional[float] = None
