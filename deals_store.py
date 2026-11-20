@@ -209,6 +209,31 @@ def list_deals() -> list:
                 except: pass
         return deals
 
+def list_deals_admin() -> list:
+    """Same as list_deals(), but also exposes the real DB updated_at/
+    created_at columns -- needed for staleness tracking (Control Tower),
+    which the JSON blob's own timestamps can't be trusted for since nothing
+    guarantees every code path that mutates a deal also updates them."""
+    if _USE_DB:
+        conn = _get_conn()
+        try:
+            rows = conn.run(
+                "SELECT data, ioi_count, status, created_at, updated_at FROM deals ORDER BY updated_at DESC LIMIT 200"
+            )
+            result = []
+            for r in rows:
+                d = json.loads(r[0])
+                d["ioiCount"] = r[1]
+                d["status"] = r[2]
+                d["_createdAt"] = r[3].isoformat() if r[3] else None
+                d["_updatedAt"] = r[4].isoformat() if r[4] else None
+                result.append(d)
+            return result
+        finally:
+            conn.close()
+    else:
+        return list_deals()
+
 def list_deals_by_user(borrower_user_id: str) -> list:
     if _USE_DB:
         conn = _get_conn()

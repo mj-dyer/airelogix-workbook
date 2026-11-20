@@ -104,7 +104,7 @@ from generate_workbook import generate_workbook
 from generate_memo import generate_memo
 from deals_engine import run_analysis
 from deals_store import (
-    save_deal, load_deal, list_deals, list_deals_by_user,
+    save_deal, load_deal, list_deals, list_deals_by_user, list_deals_admin,
     update_deal_status, save_ioi, load_iois, generate_deal_id,
     save_ioi_feedback, load_declined_iois, clear_ioi_decline,
     save_lead, mark_lead_converted,
@@ -533,6 +533,50 @@ class LenderUpdate(BaseModel):
     billingState: Optional[str] = None
     billingZip: Optional[str] = None
     notes: Optional[str] = None  # internal only -- never sent back to the applicant
+
+
+@app.get("/admin/deals/{deal_id}")
+def admin_get_deal(deal_id: str, user: dict = Depends(require_admin)):
+    deal = load_deal(deal_id)
+    if not deal:
+        raise HTTPException(status_code=404, detail=f"Deal {deal_id} not found")
+    result = dict(deal)
+    result["analysis"] = _strip_internal_rating(result.get("analysis"))
+    return result
+
+
+@app.get("/admin/deals")
+def admin_list_deals(user: dict = Depends(require_admin)):
+    # Unlike GET /deals, never redacts identity -- there's no lender here to
+    # protect it from. The no-synthetic-score house policy still applies
+    # (_strip_internal_rating), since that's a platform-wide decision, not
+    # something specific to the borrower/lender-facing redaction logic.
+    try:
+        deals = list_deals_admin()
+        queue = []
+        for d in deals:
+            analysis = _strip_internal_rating(d.get("analysis"))
+            queue.append({
+                "id": d.get("dealId"),
+                "borrowerName": d.get("borrowerName", ""),
+                "stage": d.get("status", "under_review"),
+                "receivedDate": d.get("receivedDate", ""),
+                "aircraft": d.get("aircraft", ""),
+                "aircraftSub": d.get("aircraftSub", ""),
+                "loanAmount": d.get("loanAmount", 0),
+                "ltv": d.get("ltv", 0),
+                "gdscr": d.get("gdscr", 0),
+                "nwCoverage": d.get("nwCoverage", 0),
+                "flagCount": d.get("flagCount", 0),
+                "criticalFlags": d.get("criticalFlags", 0),
+                "ioiCount": d.get("ioiCount", 0),
+                "createdAt": d.get("_createdAt"),
+                "updatedAt": d.get("_updatedAt"),
+                "analysis": analysis,
+            })
+        return {"deals": queue, "count": len(queue)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/admin/lenders")
