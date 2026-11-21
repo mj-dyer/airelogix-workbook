@@ -506,7 +506,7 @@ class LenderApplication(BaseModel):
     citizenshipRestriction: Optional[str] = ""  # us_only | open_non_us
     loanPurposeAppetite: Optional[list] = []  # purchase | refinance | cash_out
     prepaymentPreferences: Optional[list] = []  # subset of negotiable | step_down | yield_maintenance | lockout
-    originationPosture: Optional[str] = ""  # does_not_lead | leads_only | leads_and_syndicates
+    originationPosture: Optional[list] = []  # subset of leads_only | leads_and_syndicates | does_not_lead
     participationAppetite: Optional[bool] = False  # open to participating in deals led by another institution
     typicalTimeToClose: Optional[str] = ""  # 1_2_weeks | 2_4_weeks | 30_45_days | 45_60_days
     timeSensitiveDealsAppetite: Optional[bool] = False  # willingness to be routed rush/time-sensitive deals, separate from baseline speed
@@ -569,7 +569,7 @@ class LenderUpdate(BaseModel):
     citizenshipRestriction: Optional[str] = None
     loanPurposeAppetite: Optional[list] = None
     prepaymentPreferences: Optional[list] = None
-    originationPosture: Optional[str] = None
+    originationPosture: Optional[list] = None
     participationAppetite: Optional[bool] = None
     typicalTimeToClose: Optional[str] = None
     timeSensitiveDealsAppetite: Optional[bool] = None
