@@ -202,23 +202,26 @@ def get_current_user(request: Request) -> dict:
     return payload  # payload["sub"] = Supabase user UUID, payload["email"] = email
 
 # Minimal admin gate -- one operator today, so a plain email allowlist is the
-# proportionate choice over a full roles table. Set ADMIN_EMAILS on Railway
+# proportionate choice over a full roles table. Set CT_ADMIN_EMAILS on Railway
 # (comma-separated) to whoever should be able to reach /admin/lenders*.
-_raw_admin_emails = os.environ.get("ADMIN_EMAILS", "")
-print(f"[startup] raw ADMIN_EMAILS env var as seen at import time: {_raw_admin_emails!r} (length={len(_raw_admin_emails)})")
-print(f"[startup] total env vars visible to this process: {len(os.environ)}; keys sample: {sorted(os.environ.keys())[:10]}")
+# NOTE: named CT_ADMIN_EMAILS, not ADMIN_EMAILS -- the plain "ADMIN_EMAILS" key
+# never reached this container's environment despite being correctly set in
+# Railway's dashboard on this exact service (confirmed via startup logs: it
+# was absent from os.environ entirely while every other variable on the same
+# service, including ones added at the same time, came through fine). Looked
+# like a stuck/corrupted variable-to-service link on Railway's side tied
+# specifically to that key name. Renaming it was the fix.
+_raw_admin_emails = os.environ.get("CT_ADMIN_EMAILS", "")
+print(f"[startup] CT_ADMIN_EMAILS as seen at import time: {_raw_admin_emails!r} (length={len(_raw_admin_emails)})")
 ADMIN_EMAILS = set(
     e.strip().lower() for e in _raw_admin_emails.split(",") if e.strip()
 )
-print(f"[startup] parsed ADMIN_EMAILS set: {sorted(ADMIN_EMAILS)!r}")
+print(f"[startup] parsed admin allowlist: {sorted(ADMIN_EMAILS)!r}")
 
 def require_admin(user: dict = Depends(get_current_user)) -> dict:
     email = (user.get("email") or "").strip().lower()
     if not ADMIN_EMAILS or email not in ADMIN_EMAILS:
-        raise HTTPException(
-            status_code=403,
-            detail=f"Admin access required (signed in as: {email!r}, allowlist loaded: {sorted(ADMIN_EMAILS)!r})",
-        )
+        raise HTTPException(status_code=403, detail="Admin access required")
     return user
 
 class WorkbookRequest(BaseModel):
