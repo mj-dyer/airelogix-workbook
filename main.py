@@ -211,7 +211,10 @@ ADMIN_EMAILS = set(
 def require_admin(user: dict = Depends(get_current_user)) -> dict:
     email = (user.get("email") or "").strip().lower()
     if not ADMIN_EMAILS or email not in ADMIN_EMAILS:
-        raise HTTPException(status_code=403, detail=f"Admin access required (signed in as: {email or '(no email on token)'})")
+        raise HTTPException(
+            status_code=403,
+            detail=f"Admin access required (signed in as: {email!r}, allowlist loaded: {sorted(ADMIN_EMAILS)!r})",
+        )
     return user
 
 class WorkbookRequest(BaseModel):
