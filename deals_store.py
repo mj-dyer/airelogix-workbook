@@ -624,6 +624,26 @@ def update_lender(lender_id: str, updates: dict) -> Optional[dict]:
     return existing
 
 
+def delete_lender(lender_id: str) -> bool:
+    """Permanently removes a lender record. Unlike update_lender's status
+    changes (approve/decline/inactive), this is a true, irreversible delete --
+    callers should confirm with the user before calling this."""
+    if _USE_DB:
+        conn = _get_conn()
+        try:
+            rows = conn.run("DELETE FROM lenders WHERE lender_id=:id RETURNING lender_id", id=lender_id)
+            return len(rows) > 0
+        finally:
+            conn.close()
+    else:
+        _ensure_dirs()
+        p = os.path.join(LENDERS_DIR, f"{lender_id}.json")
+        if os.path.exists(p):
+            os.remove(p)
+            return True
+        return False
+
+
 # ── Calloway Demo Seed ────────────────────────────────────────────────────────
 
 CALLOWAY_DEAL_ID = "AL-2026-CALLOWAY"

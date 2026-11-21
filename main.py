@@ -108,7 +108,7 @@ from deals_store import (
     update_deal_status, save_ioi, load_iois, generate_deal_id,
     save_ioi_feedback, load_declined_iois, clear_ioi_decline,
     save_lead, mark_lead_converted,
-    save_lender_application, list_lenders, get_lender, update_lender
+    save_lender_application, list_lenders, get_lender, update_lender, delete_lender
 )
 from bio_engine import generate_bio
 
@@ -668,6 +668,16 @@ def admin_update_lender(lender_id: str, update: LenderUpdate, user: dict = Depen
     if lender is None:
         raise HTTPException(status_code=404, detail=f"Lender {lender_id} not found")
     return lender
+
+
+@app.delete("/admin/lenders/{lender_id}")
+def admin_delete_lender(lender_id: str, user: dict = Depends(require_admin)):
+    """Permanently removes a lender record -- unlike status changes
+    (approve/decline/inactive), this cannot be undone."""
+    deleted = delete_lender(lender_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Lender {lender_id} not found")
+    return {"success": True, "lenderId": lender_id}
 
 
 # A deal's identity stays withheld from lenders until the borrower has
