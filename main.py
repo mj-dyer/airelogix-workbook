@@ -204,9 +204,13 @@ def get_current_user(request: Request) -> dict:
 # Minimal admin gate -- one operator today, so a plain email allowlist is the
 # proportionate choice over a full roles table. Set ADMIN_EMAILS on Railway
 # (comma-separated) to whoever should be able to reach /admin/lenders*.
+_raw_admin_emails = os.environ.get("ADMIN_EMAILS", "")
+print(f"[startup] raw ADMIN_EMAILS env var as seen at import time: {_raw_admin_emails!r} (length={len(_raw_admin_emails)})")
+print(f"[startup] total env vars visible to this process: {len(os.environ)}; keys sample: {sorted(os.environ.keys())[:10]}")
 ADMIN_EMAILS = set(
-    e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()
+    e.strip().lower() for e in _raw_admin_emails.split(",") if e.strip()
 )
+print(f"[startup] parsed ADMIN_EMAILS set: {sorted(ADMIN_EMAILS)!r}")
 
 def require_admin(user: dict = Depends(get_current_user)) -> dict:
     email = (user.get("email") or "").strip().lower()
