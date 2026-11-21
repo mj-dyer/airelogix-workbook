@@ -204,19 +204,18 @@ def get_current_user(request: Request) -> dict:
 # Minimal admin gate -- one operator today, so a plain email allowlist is the
 # proportionate choice over a full roles table. Set CT_ADMIN_EMAILS on Railway
 # (comma-separated) to whoever should be able to reach /admin/lenders*.
-# NOTE: named CT_ADMIN_EMAILS, not ADMIN_EMAILS -- the plain "ADMIN_EMAILS" key
-# never reached this container's environment despite being correctly set in
-# Railway's dashboard on this exact service (confirmed via startup logs: it
-# was absent from os.environ entirely while every other variable on the same
-# service, including ones added at the same time, came through fine). Looked
-# like a stuck/corrupted variable-to-service link on Railway's side tied
-# specifically to that key name. Renaming it was the fix.
+#
+# Root cause of the earlier ADMIN_EMAILS mystery (2026-11-21): new Railway
+# variables sit in "staged changes" until explicitly applied via the project
+# canvas's "Apply changes" banner -- neither a code-triggered deploy nor a
+# manual service restart applies pending variable changes on their own.
+# Pre-existing variables (ANTHROPIC_API_KEY, DATABASE_URL, SUPABASE_JWT_SECRET)
+# worked because they'd been committed long ago; anything added afterward sat
+# unapplied indefinitely. Not a platform bug -- just an easy-to-miss step.
 _raw_admin_emails = os.environ.get("CT_ADMIN_EMAILS", "")
-print(f"[startup] CT_ADMIN_EMAILS as seen at import time: {_raw_admin_emails!r} (length={len(_raw_admin_emails)})")
 ADMIN_EMAILS = set(
     e.strip().lower() for e in _raw_admin_emails.split(",") if e.strip()
 )
-print(f"[startup] parsed admin allowlist: {sorted(ADMIN_EMAILS)!r}")
 
 def require_admin(user: dict = Depends(get_current_user)) -> dict:
     email = (user.get("email") or "").strip().lower()
